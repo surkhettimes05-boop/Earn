@@ -5,6 +5,6 @@ window.EARN_STRINGS = {
   earner:"Earner", business:"Business", chooseRole:"I want to join as", name:"Your name", businessName:"Business name",
   signingIn:"Signing in…", creating:"Creating account…", logout:"Log out",
   home:"Home", sell:"Sell", orders:"Orders", money:"Money", campaigns:"Campaigns",
-  nextStage:"Coming in the next stage.", welcome:"Welcome", authError:"Something went wrong. Try again.",
+  nextStage:"Coming in the next stage.", welcome:"Welcome", authError:"Something went wrong. Try again.",\n  landingSupport:"Earn by helping real products reach real buyers.", back:"Back", signedInSuffix:"account is signed in.", roleMismatch:"This account uses a different role. Choose the correct role and try again.",
   phoneHint:"Use a Nepal mobile number, for example 98XXXXXXXX.", passwordHint:"Use at least 8 characters."
 };
