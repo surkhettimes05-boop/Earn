@@ -146,3 +146,28 @@ Therefore buyer rejection while Order is `PAYMENT_PENDING` has two branches. If 
 The 24-hour SUBMITTED expiry is covered in the real PostgreSQL integration suite, not with a mocked database or mocked clock. The test writes explicit `createdAt` ages (25 hours old and 23 hours old), invokes the expiry function with the real Prisma client, and verifies only the stale order is cancelled plus one `ORDER_EXPIRED` event.
 
 `api/cron/expire-orders.js` accepts GET (and POST), requires exactly `Authorization: Bearer <CRON_SECRET>`, returns 401 for a missing or incorrect secret, and on success returns `{ "expired": <number>, "cutoff": "<ISO timestamp>" }`. Integration tests cover missing/wrong authorization and an authorized GET that expires a real stale database row. No Vercel cron schedule is committed yet.
+
+
+## Stage B1 — auth + role shell
+
+### Implemented
+- Replaced the prototype landing/auth shell with a mobile-first EARN interface using the specified palette, DM Sans, accessible touch sizes, real form controls, loading states and API error messages.
+- Public landing copy: “Sell products. See exactly what you earn. Get paid when delivery is confirmed.”
+- Sign-up and sign-in use the real `POST /api/auth/signup` and `POST /api/auth/login` endpoints. Both screens ask the user to choose Earner or Business. Sign-in verifies the server-returned role matches that choice rather than trusting the client.
+- Session restoration uses the real `GET /api/me` endpoint.
+- Earner shell exposes only Home, Sell, Orders and Money. Business shell exposes only Campaigns, Orders and Money. B1 tab bodies are explicit “Coming in the next stage” placeholders and contain no fake data.
+- ADMIN is deliberately not admitted into either role shell. Admin tools remain a separate future `/admin` experience.
+- Logout removes the session token and returns to the public landing page.
+- Browser API calls live in `public/client.js`; user-facing copy lives in `public/strings.js`.
+
+### Session-token handling
+The JWT returned by the existing API is stored in browser `sessionStorage` under `earn_session_token`. Passwords are never stored. `sessionStorage` was chosen instead of `localStorage` so the token is scoped to the tab/session and is normally discarded when that browsing session ends. This is acceptable for the current B1 pilot but is not equivalent to an HttpOnly cookie: any successful same-origin XSS could read the token. Moving auth to Secure + HttpOnly + SameSite cookies would require a backend auth contract change and is therefore recorded as a backend hardening gap rather than silently changed in this frontend-only stage.
+
+### B1 backend gaps
+1. Authentication returns a bearer JWT to JavaScript rather than setting a Secure/HttpOnly/SameSite session cookie. Consider cookie-based sessions before higher-risk public deployment.
+2. There is no dedicated admin web route/shell yet. B1 intentionally excludes ADMIN from earner/business navigation; Stage B7 owns the admin experience.
+3. Existing customer token endpoints still lack rate limiting.
+4. Orders in CUSTOMER_CONFIRMED / ACCEPTED / PAYMENT_PENDING still need progression/payment deadlines so campaign capacity cannot remain reserved indefinitely.
+
+### B1 verification
+The user confirmed `npm test` and `npm run test:integration` passed on main immediately before B1. B1 does not modify `api/`, `prisma/`, or backend logic in `lib/`. This environment could inspect and write GitHub files but could not execute the browser flow, npm tests, Prisma, or the private database. Before merging B1, run both existing test commands and manually verify Earner and Business signup/login/logout using the steps in PR #3.
