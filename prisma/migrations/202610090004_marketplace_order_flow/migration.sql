@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS "LogisticsAssignment" (
 
 CREATE TABLE IF NOT EXISTS "Settlement" (
  "id" TEXT PRIMARY KEY,
- "orderId" TEXT NOT NULL,
+ "orderId" TEXT NOT NULL REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
  "partyType" TEXT NOT NULL,
  "partyId" TEXT,
  "amountPaisa" BIGINT NOT NULL,
