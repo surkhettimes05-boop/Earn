@@ -16,7 +16,7 @@ window.EARN_STRINGS = {
   buyerLink:"Buyer confirmation link", copyLink:"Copy link", copied:"Link copied", shareWhatsApp:"Share on WhatsApp", getAgain:"Get buyer link again",
   reissueWarning:"Getting a new link will stop the old link from working.", reissueConfirm:"Get a new link and stop the old one?", gettingLink:"Getting new link…",
   chooseProduct:"Choose a product to sell", orderCreated:"Sale created. Send this link to the buyer.", buyerMessage:"Please confirm your order here:",
-  loadError:"Could not load this page. Try again.", statusSubmitted:"Waiting for buyer", statusConfirmed:"Buyer confirmed", statusAccepted:"Accepted",
+  loadError:"Could not load this page. Try again.", retryLinkError:"The sale already exists, but its buyer link is no longer available. Open Orders and get the buyer link again.", capError:"This product has reached its sales limit.", duplicateError:"This buyer already has an active or completed order for this product.", statusSubmitted:"Waiting for buyer", statusConfirmed:"Buyer confirmed", statusAccepted:"Accepted",
   statusPayment:"Waiting for payment", statusPaid:"Paid", statusReady:"Ready for pickup", statusPicked:"Picked up", statusDelivery:"Out for delivery",
   statusDelivered:"Delivered", statusVerified:"Completed", statusPartial:"Partly delivered", statusCancelled:"Cancelled", statusReturned:"Returned", statusDisputed:"Needs review"
 };
