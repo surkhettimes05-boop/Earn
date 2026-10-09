@@ -37,9 +37,25 @@ enum OrderStatus {
   SUBMITTED
   CUSTOMER_CONFIRMED
   ACCEPTED
+  PAYMENT_PENDING
+  PAID
+  READY_FOR_PICKUP
+  PICKED_UP
+  OUT_FOR_DELIVERY
   DELIVERED
+  VERIFIED
+  PARTIALLY_DELIVERED
+  DELIVERY_FAILED
+  RETURN_IN_PROGRESS
+  RETURNED
+  DISPUTED
   CANCELLED
 }
+
+enum PaymentStatus { PENDING SUBMITTED CONFIRMED FAILED REFUND_PENDING REFUNDED }
+enum LogisticsStatus { UNASSIGNED ASSIGNED PICKED_UP OUT_FOR_DELIVERY DELIVERED FAILED RETURNING RETURNED }
+enum SettlementStatus { HELD PAYABLE PAID REVERSED }
+enum DisputeStatus { OPEN RESOLVED REJECTED }
 
 enum RewardStatus {
   PENDING
@@ -130,6 +146,22 @@ model Order {
   customerConfirmedAt DateTime?
   deliveryPinHash String?
   deliveryVerifiedAt DateTime?
+  acceptedAt DateTime?
+  paymentConfirmedAt DateTime?
+  readyForPickupAt DateTime?
+  pickedUpAt DateTime?
+  deliveredAt DateTime?
+  verifiedAt DateTime?
+  cancelledAt DateTime?
+  cancelReason String?
+  acceptedQuantity Int?
+  pickedUpQuantity Int?
+  deliveredQuantity Int?
+  returnedQuantity Int @default(0)
+  productSubtotalPaisaSnapshot BigInt?
+  totalCommissionPaisaSnapshot BigInt?
+  merchantSettlementPaisaSnapshot BigInt?
+  deliveryFeePaisa BigInt @default(0)
   unitPricePaisaSnapshot BigInt?
   commissionBasisSnapshot CommissionBasis?
   businessCommissionPaisaSnapshot BigInt?
@@ -144,6 +176,11 @@ model Order {
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
   reward            Reward?
+  payment           Payment?
+  logistics         LogisticsAssignment?
+  settlements       Settlement[]
+  disputes          Dispute[]
+  events            OrderEvent[]
 
   @@index([businessId, status])
 }
@@ -170,4 +207,73 @@ model LedgerEntry {
   createdAt      DateTime   @default(now())
 
   @@index([userId, createdAt])
+}
+
+model Payment {
+  id String @id @default(cuid())
+  orderId String @unique
+  order Order @relation(fields:[orderId], references:[id])
+  amountPaisa BigInt
+  method String
+  reference String?
+  status PaymentStatus @default(PENDING)
+  submittedAt DateTime?
+  confirmedAt DateTime?
+  refundedPaisa BigInt @default(0)
+  createdAt DateTime @default(now())
+}
+
+model LogisticsAssignment {
+  id String @id @default(cuid())
+  orderId String @unique
+  order Order @relation(fields:[orderId], references:[id])
+  transporterName String
+  transporterPhone String?
+  quotedFeePaisa BigInt
+  transporterCostPaisa BigInt
+  status LogisticsStatus @default(ASSIGNED)
+  pickupCodeHash String?
+  assignedAt DateTime @default(now())
+  pickedUpAt DateTime?
+  deliveredAt DateTime?
+  returnedAt DateTime?
+}
+
+model Settlement {
+  id String @id @default(cuid())
+  orderId String
+  order Order @relation(fields:[orderId], references:[id])
+  partyType String
+  partyId String?
+  amountPaisa BigInt
+  status SettlementStatus @default(HELD)
+  paidAt DateTime?
+  createdAt DateTime @default(now())
+  @@unique([orderId,partyType])
+}
+
+model Dispute {
+  id String @id @default(cuid())
+  orderId String
+  order Order @relation(fields:[orderId], references:[id])
+  openedBy String
+  reason String
+  details String?
+  status DisputeStatus @default(OPEN)
+  resolution String?
+  createdAt DateTime @default(now())
+  resolvedAt DateTime?
+  @@index([orderId,status])
+}
+
+model OrderEvent {
+  id String @id @default(cuid())
+  orderId String
+  order Order @relation(fields:[orderId], references:[id])
+  type String
+  actorRole String
+  actorId String?
+  metadata Json?
+  createdAt DateTime @default(now())
+  @@index([orderId,createdAt])
 }
