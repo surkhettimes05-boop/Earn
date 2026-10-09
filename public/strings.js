@@ -23,7 +23,7 @@ window.EARN_STRINGS = {
   yesOrder:"Yes, I placed this order", noOrder:"I did not place this order", confirmingOrder:"Confirming…", rejectingOrder:"Sending…",
   confirmedNext:"Thanks. The business will review your order next. Come back to this link for payment and delivery updates.",
   rejected:"This order has been cancelled. You do not need to do anything else.", refundReview:"Your payment reference was already submitted, so the order was not silently cancelled. A refund review has been opened.",
-  paymentTitle:"Pay EARN", paymentTrust:"You pay EARN, not the business. Money is held safely and released only after you confirm you received the goods.",
+  paymentTitle:"Pay EARN", paymentTrust:"Pay EARN, not the business. EARN confirms your payment, and pays the seller only after you confirm delivery.",
   goods:"Goods", delivery:"Delivery by EARN", amountToPay:"Total to pay", paymentInstructions:"Payment instructions", paymentPlaceholder:"Payment instructions are not available from the API yet. Do not send money until EARN gives you verified payment details.",
   paymentMethod:"Payment method", paymentReference:"Payment reference", submitPayment:"I have paid — submit reference", submittingPayment:"Submitting…",
   paymentSubmitted:"Your payment reference was sent to EARN for confirmation.", rejectAfterPayment:"If this was not your order, reporting it now opens a refund review instead of silently cancelling it.",
