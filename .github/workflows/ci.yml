@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  CI:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: earn_ci
+          POSTGRES_PASSWORD: earn_ci_password
+          POSTGRES_DB: earn_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U earn_ci -d earn_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://earn_ci:earn_ci_password@localhost:5432/earn_test
+      DATABASE_URL: postgresql://earn_ci:earn_ci_password@localhost:5432/earn_not_test
+      JWT_SECRET: ci-only-jwt-secret-8f2a7c1d9e4b6a3f
+      CRON_SECRET: ci-only-cron-secret-4c8e1a7b9d2f6e3a
+      EARN_PAYMENT_ACCOUNT_NAME: EARN CI TEST ACCOUNT
+      EARN_PAYMENT_BANK_NAME: CI Test Bank
+      EARN_PAYMENT_BANK_ACCOUNT: "0000000000"
+      EARN_PAYMENT_ESEWA_ID: "9800000000"
+      EARN_PAYMENT_KHALTI_ID: "9800000001"
+      EARN_PAYMENT_QR_URL: https://example.invalid/ci-payment-qr.png
+      EARN_PAYMENT_REFERENCE_FORMAT: EARN-CI-{ORDER_ID}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read Node version
+        id: node-version
+        shell: bash
+        run: |
+          node_version="$(node -e "const p=require('./package.json'); const e=p.engines&&p.engines.node; const m=e&&e.match(/[0-9]+/); process.stdout.write(m?m[0]:'20')")"
+          echo "version=$node_version" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.node-version.outputs.version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Integration tests
+        run: npm run test:integration
