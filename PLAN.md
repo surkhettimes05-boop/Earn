@@ -302,3 +302,7 @@ B2 was checked locally/preview by the user before squash merge. B3 is frontend-o
 
 ### B4 verification
 B4 is frontend-only: `index.html`, `public/client.js`, `public/strings.js`, and this plan. It branches from main after the B3 squash merge and does not include the separate payment-instructions backend branch. This environment could inspect/write/compare GitHub files but could not execute npm, Prisma, the private database, or browser interaction. No post-B4 runtime pass is claimed.
+
+
+## CI bootstrap
+- [ ] Generate and commit a genuine `package-lock.json` using npm in a trusted Codespace/local environment, then change GitHub Actions back from temporary `npm install` to deterministic `npm ci` and restore npm dependency caching.
