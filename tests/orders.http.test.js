@@ -194,3 +194,60 @@ test("cron GET with CRON_SECRET returns expired count", async()=>{
   assert.equal(res.statusCode,200); assert.equal(typeof res.body.expired,"number"); assert.ok(res.body.expired>=1);
   assert.equal((await db.order.findUnique({where:{id:old.id}})).status,"CANCELLED");
 });
+
+
+test("buyer payment instructions appear only while PAYMENT_PENDING", async()=>{
+  const previous={
+    accountName:process.env.EARN_PAYMENT_ACCOUNT_NAME,
+    referenceFormat:process.env.EARN_PAYMENT_REFERENCE_FORMAT,
+    bankName:process.env.EARN_PAYMENT_BANK_NAME,
+    bankAccount:process.env.EARN_PAYMENT_BANK_ACCOUNT,
+    esewa:process.env.EARN_PAYMENT_ESEWA_ID,
+    khalti:process.env.EARN_PAYMENT_KHALTI_ID,
+    qr:process.env.EARN_PAYMENT_QR_IMAGE_URL
+  };
+  Object.assign(process.env,{
+    EARN_PAYMENT_ACCOUNT_NAME:"EARN Test Account",
+    EARN_PAYMENT_REFERENCE_FORMAT:"TEST-ORDER-REFERENCE",
+    EARN_PAYMENT_BANK_NAME:"Test Bank",
+    EARN_PAYMENT_BANK_ACCOUNT:"TEST-ACCOUNT-ONLY",
+    EARN_PAYMENT_ESEWA_ID:"9800000000",
+    EARN_PAYMENT_KHALTI_ID:"9800000001",
+    EARN_PAYMENT_QR_IMAGE_URL:"https://example.test/earn-qr.png"
+  });
+  try{
+    const f=await fixture({earnerNumber:23}), created=await request("POST","/api/orders",f.token,orderBody(f,"23"));
+    ids.orders.push(created.body.id);
+    const buyerToken=new URL(created.body.customerConfirmationPath,"http://x").searchParams.get("token");
+    const submitted=await request("GET","/api/customer/order?token="+buyerToken,null);
+    assert.equal(submitted.statusCode,200);
+    assert.equal(Object.hasOwn(submitted.body,"paymentInstructions"),false);
+
+    await db.order.update({where:{id:created.body.id},data:{status:"PAYMENT_PENDING",deliveryFeePaisa:10000n}});
+    await db.payment.create({data:{orderId:created.body.id,amountPaisa:450000n,method:"BANK_OR_QR",status:"PENDING"}});
+    const pending=await request("GET","/api/customer/order?token="+buyerToken,null);
+    assert.equal(pending.statusCode,200);
+    assert.deepEqual(pending.body.paymentInstructions,{
+      accountName:"EARN Test Account",
+      referenceFormat:"TEST-ORDER-REFERENCE",
+      bank:{name:"Test Bank",account:"TEST-ACCOUNT-ONLY"},
+      eSewa:{id:"9800000000"},
+      khalti:{id:"9800000001"},
+      qrImageUrl:"https://example.test/earn-qr.png"
+    });
+
+    await db.order.update({where:{id:created.body.id},data:{status:"PAID"}});
+    const paid=await request("GET","/api/customer/order?token="+buyerToken,null);
+    assert.equal(paid.statusCode,200);
+    assert.equal(Object.hasOwn(paid.body,"paymentInstructions"),false);
+  }finally{
+    const restore=(name,value)=>value===undefined?delete process.env[name]:process.env[name]=value;
+    restore("EARN_PAYMENT_ACCOUNT_NAME",previous.accountName);
+    restore("EARN_PAYMENT_REFERENCE_FORMAT",previous.referenceFormat);
+    restore("EARN_PAYMENT_BANK_NAME",previous.bankName);
+    restore("EARN_PAYMENT_BANK_ACCOUNT",previous.bankAccount);
+    restore("EARN_PAYMENT_ESEWA_ID",previous.esewa);
+    restore("EARN_PAYMENT_KHALTI_ID",previous.khalti);
+    restore("EARN_PAYMENT_QR_IMAGE_URL",previous.qr);
+  }
+});
