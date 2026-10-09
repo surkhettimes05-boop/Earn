@@ -70,6 +70,22 @@ module.exports=async(req,res)=>{try{
   await db.orderEvent.create({data:{orderId:o.id,type:"CUSTOMER_CONFIRMED",actorRole:"CUSTOMER"}});
   return json(res,200,{id:x.id,status:x.status,deliveryPin:pin});
  }
+ if(m==="POST"&&p==="/customer/reject-order"){
+  const b=await body(req),t=String(b.token||"");
+  if(!text(t,20,200))return json(res,400,{error:"Invalid order token"});
+  const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(t)}});
+  if(!o)return json(res,404,{error:"Order not found"});
+  if(!["SUBMITTED","CUSTOMER_CONFIRMED","ACCEPTED","PAYMENT_PENDING"].includes(o.status))return json(res,409,{error:"This order can no longer be rejected"});
+  const x=await db.$transaction(async tx=>{
+   await tx.$queryRawUnsafe('SELECT id FROM "Campaign" WHERE id = $1 FOR UPDATE',o.campaignId);
+   const current=await tx.order.findUnique({where:{id:o.id}});
+   if(!current||!["SUBMITTED","CUSTOMER_CONFIRMED","ACCEPTED","PAYMENT_PENDING"].includes(current.status))throw Object.assign(new Error("This order can no longer be rejected"),{status:409});
+   const z=await tx.order.update({where:{id:o.id},data:{status:"CANCELLED",cancelledAt:new Date(),cancelReason:"Buyer says they did not place this order"}});
+   await tx.orderEvent.create({data:{orderId:o.id,type:"CUSTOMER_REJECTED_ORDER",actorRole:"CUSTOMER"}});
+   return z;
+  });
+  return json(res,200,{id:x.id,status:x.status});
+ }
  if(m==="POST"&&p==="/customer/payment"){
   const b=await body(req),t=String(b.token||"");
   if(!text(t,20,200)||!text(b.reference,3,120)||!text(b.method,2,40))return json(res,400,{error:"Payment method and reference are required"});
