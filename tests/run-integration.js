@@ -1,7 +1,8 @@
-// Local-only convenience: Node 22+ can load TEST_DATABASE_URL from an uncommitted .env.
-// Vercel does not execute this script during install/build/preview.
-if (typeof process.loadEnvFile === "function") {
-  try { process.loadEnvFile(".env"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+// Local-only convenience: load an uncommitted .env only when it exists.
+// CI supplies its environment directly, so a missing .env is an expected no-op.
+const fs = require("node:fs");
+if (typeof process.loadEnvFile === "function" && fs.existsSync(".env")) {
+  process.loadEnvFile(".env");
 }
 const { spawnSync } = require("node:child_process");
 const { integrationEnv } = require("./integration-db-guard");
