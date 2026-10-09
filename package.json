@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vercel dev",
     "postinstall": "prisma generate",
-    "test": "node --test tests/domain.test.js tests/integration-db-guard.test.js",
+    "test": "node --test tests/domain.test.js tests/integration-db-guard.test.js tests/order-expiry.test.js",
     "test:integration": "node tests/run-integration.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
