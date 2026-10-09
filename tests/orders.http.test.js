@@ -125,3 +125,23 @@ test("owning earner can re-issue buyer link and old token is invalidated", async
   assert.equal(newLookup.body.id,created.body.id);
   assert.equal(await db.orderEvent.count({where:{orderId:created.body.id,type:"CUSTOMER_LINK_REISSUED"}}),1);
 });
+
+test("buyer can reject an unrecognized order before payment and release its cap slot", async()=>{
+  const f=await fixture({cap:1,earnerNumber:18}), created=await request("POST","/api/orders",f.token,orderBody(f,"18"));
+  ids.orders.push(created.body.id);
+  const buyerToken=new URL(created.body.customerConfirmationPath,"http://x").searchParams.get("token");
+  const rejected=await request("POST","/api/customer/reject-order",null,{token:buyerToken});
+  assert.equal(rejected.statusCode,200); assert.equal(rejected.body.status,"CANCELLED");
+  assert.equal(await db.orderEvent.count({where:{orderId:created.body.id,type:"CUSTOMER_REJECTED_ORDER"}}),1);
+  const replacement=await request("POST","/api/orders",f.token,orderBody(f,"181",{customerPhone:phone(981)}));
+  assert.equal(replacement.statusCode,201); ids.orders.push(replacement.body.id);
+});
+
+test("buyer cannot reject after payment is confirmed", async()=>{
+  const f=await fixture({earnerNumber:19}), created=await request("POST","/api/orders",f.token,orderBody(f,"19"));
+  ids.orders.push(created.body.id);
+  const buyerToken=new URL(created.body.customerConfirmationPath,"http://x").searchParams.get("token");
+  await db.order.update({where:{id:created.body.id},data:{status:"PAID",paymentConfirmedAt:new Date()}});
+  const rejected=await request("POST","/api/customer/reject-order",null,{token:buyerToken});
+  assert.equal(rejected.statusCode,409);
+});
