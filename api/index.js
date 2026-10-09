@@ -65,7 +65,9 @@ module.exports=async(req,res)=>{try{
   if(!text(t,20,200))return json(res,400,{error:"Invalid order token"});
   const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(t)},include:{campaign:{select:{title:true,unitLabel:true}},business:{select:{name:true}},payment:true,logistics:true}});
   if(!o)return json(res,404,{error:"Order not found"});
-  const result={id:o.id,status:o.status,customerName:o.customerName,product:o.product,quantity:o.quantity,acceptedQuantity:o.acceptedQuantity,deliveredQuantity:o.deliveredQuantity,unitPricePaisa:o.unitPricePaisaSnapshot,productSubtotalPaisa:o.productSubtotalPaisaSnapshot,deliveryFeePaisa:o.deliveryFeePaisa,campaign:o.campaign,business:o.business,payment:o.payment?{status:o.payment.status,amountPaisa:o.payment.amountPaisa,method:o.payment.method}:null};\n  if(o.status==="PAYMENT_PENDING")result.paymentInstructions=paymentInstructions();\n  return json(res,200,result);
+  const result={id:o.id,status:o.status,customerName:o.customerName,product:o.product,quantity:o.quantity,acceptedQuantity:o.acceptedQuantity,deliveredQuantity:o.deliveredQuantity,unitPricePaisa:o.unitPricePaisaSnapshot,productSubtotalPaisa:o.productSubtotalPaisaSnapshot,deliveryFeePaisa:o.deliveryFeePaisa,campaign:o.campaign,business:o.business,payment:o.payment?{status:o.payment.status,amountPaisa:o.payment.amountPaisa,method:o.payment.method}:null};
+  if(o.status==="PAYMENT_PENDING")result.paymentInstructions=paymentInstructions();
+  return json(res,200,result);
  }
  if(m==="POST"&&p==="/customer/confirm-order"){
   const b=await body(req),t=String(b.token||"");
