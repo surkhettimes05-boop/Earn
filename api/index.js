@@ -68,7 +68,9 @@ module.exports=async(req,res)=>{try{
   let commercial={commissionBasis:"FIXED_ORDER",businessCommissionPaisa:null,businessCommissionBps:null,unitPricePaisa:null,unitLabel:null,earnerShareBps:10000};
   let rewardPaisa;
   if(b.type==="ORDER"){
-   const basis=String(b.commissionBasis||"PER_UNIT"),unitPrice=Number(b.unitPriceNpr),businessCommission=Number(b.businessCommissionNpr),businessPercent=Number(b.businessCommissionPercent),earnerPercent=Number(b.earnerSharePercent);
+   if(!Object.prototype.hasOwnProperty.call(b,"commissionBasis")||!text(String(b.commissionBasis||""),3,30))return json(res,400,{error:"ORDER campaigns require commission terms. Refresh the app and try again."});
+   if(!Object.prototype.hasOwnProperty.call(b,"earnerSharePercent"))return json(res,400,{error:"ORDER campaigns require an earner share."});
+   const basis=String(b.commissionBasis),unitPrice=Number(b.unitPriceNpr),businessCommission=Number(b.businessCommissionNpr),businessPercent=Number(b.businessCommissionPercent),earnerPercent=Number(b.earnerSharePercent);
    if(!["FIXED_ORDER","PER_UNIT","PERCENT_GMV"].includes(basis))return json(res,400,{error:"Choose a valid commission structure"});
    if(!Number.isFinite(earnerPercent)||earnerPercent<=0||earnerPercent>100)return json(res,400,{error:"Earner share must be between 0 and 100%"});
    if((basis==="PER_UNIT"||basis==="PERCENT_GMV")&&(!Number.isFinite(unitPrice)||unitPrice<=0))return json(res,400,{error:"Enter the product price"});
@@ -90,6 +92,12 @@ module.exports=async(req,res)=>{try{
   const c=await db.campaign.findUnique({where:{id:pub[1]},include:{business:true}});
   if(!c)return json(res,404,{error:"Campaign not found"});
   if(session.role!=="ADMIN"&&c.business.ownerId!==session.sub)return json(res,403,{error:"Forbidden"});
+  if(c.type==="ORDER"){
+   const legacy=c.commissionBasis==="FIXED_ORDER"&&c.businessCommissionPaisa==null&&c.businessCommissionBps==null;
+   const missingSplit=!Number.isInteger(c.earnerShareBps)||c.earnerShareBps<=0||c.earnerShareBps>10000;
+   const missingTerms=c.commissionBasis==="PER_UNIT"&&(!c.unitPricePaisa||!c.unitLabel||!c.businessCommissionPaisa)||c.commissionBasis==="PERCENT_GMV"&&(!c.unitPricePaisa||!c.unitLabel||!c.businessCommissionBps)||c.commissionBasis==="FIXED_ORDER"&&!c.businessCommissionPaisa;
+   if(legacy||missingSplit||missingTerms)return json(res,409,{error:"This ORDER campaign has incomplete commission terms and cannot be published."});
+  }
   return json(res,200,await db.campaign.update({where:{id:c.id},data:{status:"LIVE"}}));
  }
 
