@@ -33,5 +33,17 @@ window.EARN_STRINGS = {
   waitingBusiness:"You confirmed the order. The business needs to accept it before payment.", paidMessage:"EARN has confirmed your payment. Your order is being prepared.", readyMessage:"Your order is ready for pickup and delivery.",
   transitMessage:"Your order is on the way.", deliveredMessage:"Your order has been marked delivered. Confirm the quantity you actually received below.",
   cancelledMessage:"This order has been cancelled. No further action is needed.", returnedMessage:"This order was returned.", disputedMessage:"This order needs review by EARN. If money was already sent, follow the refund instructions from EARN.",
-  completedMessage:"Delivery has been confirmed and this order is complete.", expiredMessage:"This order expired before buyer confirmation."
+  completedMessage:"Delivery has been confirmed and this order is complete.", expiredMessage:"This order expired before buyer confirmation.",
+  trackOrder:"Track order", expectedCommission:"Expected commission", commissionReassurance:"Your commission becomes payable after delivery is confirmed and the order completes.",
+  stepBuyer:"Buyer confirmed", stepBuyerHelp:"The buyer confirms they placed the order.",
+  stepBusiness:"Business accepted", stepBusinessHelp:"The business accepts the quantity it can supply.",
+  stepPay:"Buyer pays EARN", stepPayHelp:"EARN confirms the buyer's payment before fulfillment continues.",
+  stepPickup:"Pickup", stepPickupHelp:"The goods are collected from the business.",
+  stepDelivery:"Delivery", stepDeliveryHelp:"The goods travel to the buyer.",
+  stepQuantity:"Buyer confirms quantity", stepQuantityHelp:"The buyer confirms how many items actually arrived.",
+  stepPaid:"You get paid", stepPaidHelp:"Your commission becomes payable after the completed delivery is settled.",
+  somethingWrong:"Something wrong?", reportProblem:"Report a problem", problemReason:"What went wrong?", problemNote:"Add a note (optional)", submitProblem:"Send for review", sendingProblem:"Sending…",
+  problemSent:"EARN is reviewing this problem.", problemOpen:"Under review", problemResolved:"Resolved",
+  reasonWrongQuantity:"Wrong quantity", reasonDelivery:"Delivery problem", reasonPayment:"Payment problem", reasonProduct:"Product problem", reasonOther:"Something else",
+  selectOrder:"Choose an order to see its progress.", noBusinessOrders:"No orders yet.", currentStep:"Current", completedStep:"Done", upcomingStep:"Next"
 };

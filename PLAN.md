@@ -279,3 +279,26 @@ Finally reload the buyer link and submit the actual received quantity plus the s
 
 ### B3 verification
 B2 was checked locally/preview by the user before squash merge. B3 is frontend-only: `index.html`, `public/client.js`, `public/strings.js`, and this plan. No `api/`, `prisma/`, or backend `lib/` logic changed. This environment could inspect/write/compare GitHub files but could not execute npm, Prisma, the private database, browser payment flow, or local curl lifecycle. No post-B3 runtime pass is claimed.
+
+
+## Stage B4 — Earner + Business order tracker
+
+### Implemented
+- The Orders tab for both EARNER and BUSINESS now loads its real role-scoped order endpoint and opens a seven-step vertical tracker: Buyer confirmed → Business accepted → Buyer pays EARN → Pickup → Delivery → Buyer confirms quantity → You get paid.
+- Completed steps are green, the current step is amber, and upcoming steps are neutral grey. Each step has one plain-language explanation.
+- The reassurance copy is deliberately limited to the actual contract: the earner's commission becomes payable after delivery is confirmed and the order completes.
+- Earner tracker shows expected commission from the immutable order reward snapshot when present, with the created Reward amount as a compatibility fallback.
+- “Something wrong?” opens a reason + optional note form and calls the real `POST /api/orders/:id/dispute`. There is no photo control because attachment storage does not exist.
+- Existing open disputes from the order list response are shown as “Under review” with the submitted reason/note.
+- Business uses the same tracker but does not show the earner's commission amount.
+
+### B4 backend gaps
+1. There is no single order-detail/event-history GET endpoint. The seven-step tracker must infer progress from the current OrderStatus; it cannot show an immutable per-step timestamp/audit trail.
+2. There is no admin dispute-resolution endpoint yet. A submitted dispute can be shown as OPEN/under review, but the UI cannot truthfully provide a resolution workflow until backend support exists.
+3. `POST /api/orders/:id/dispute` currently permits creating another dispute even if one is already open. B4 displays the existing open dispute, but the backend should enforce the desired duplicate/open-dispute policy.
+4. There is no dispute attachment/photo endpoint; B4 intentionally supports text only.
+5. The current order-list response includes the immutable `earnerRewardPaisaSnapshot` directly on Order. B4 uses it for expected commission; older/legacy rows can fall back to Reward amount. A dedicated public order DTO would reduce exposure of unrelated internal fields.
+6. The seven conceptual steps do not map one-to-one to every exception state (cancelled, returned, disputed, partial delivery). B4 leaves the order status visible and does not pretend an exception completed a normal milestone.
+
+### B4 verification
+B4 is frontend-only: `index.html`, `public/client.js`, `public/strings.js`, and this plan. It branches from main after the B3 squash merge and does not include the separate payment-instructions backend branch. This environment could inspect/write/compare GitHub files but could not execute npm, Prisma, the private database, or browser interaction. No post-B4 runtime pass is claimed.
