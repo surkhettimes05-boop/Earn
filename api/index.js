@@ -51,12 +51,21 @@ module.exports=async(req,res)=>{try{
  }
 
  // Customer endpoints are intentionally public but protected by a high-entropy order token.
+ function paymentInstructions(){
+  const value=name=>String(process.env[name]||"").trim()||null;
+  const x={accountName:value("EARN_PAYMENT_ACCOUNT_NAME"),referenceFormat:value("EARN_PAYMENT_REFERENCE_FORMAT"),bank:null,eSewa:null,khalti:null,qrImageUrl:value("EARN_PAYMENT_QR_IMAGE_URL")};
+  const bankName=value("EARN_PAYMENT_BANK_NAME"),bankAccount=value("EARN_PAYMENT_BANK_ACCOUNT");
+  if(bankName||bankAccount)x.bank={name:bankName,account:bankAccount};
+  const esewa=value("EARN_PAYMENT_ESEWA_ID"); if(esewa)x.eSewa={id:esewa};
+  const khalti=value("EARN_PAYMENT_KHALTI_ID"); if(khalti)x.khalti={id:khalti};
+  return Object.values(x).some(Boolean)?x:null;
+ }
  if(m==="GET"&&p==="/customer/order"){
   const t=url(req).searchParams.get("token")||"";
   if(!text(t,20,200))return json(res,400,{error:"Invalid order token"});
   const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(t)},include:{campaign:{select:{title:true,unitLabel:true}},business:{select:{name:true}},payment:true,logistics:true}});
   if(!o)return json(res,404,{error:"Order not found"});
-  return json(res,200,{id:o.id,status:o.status,customerName:o.customerName,product:o.product,quantity:o.quantity,acceptedQuantity:o.acceptedQuantity,deliveredQuantity:o.deliveredQuantity,unitPricePaisa:o.unitPricePaisaSnapshot,productSubtotalPaisa:o.productSubtotalPaisaSnapshot,deliveryFeePaisa:o.deliveryFeePaisa,campaign:o.campaign,business:o.business,payment:o.payment?{status:o.payment.status,amountPaisa:o.payment.amountPaisa,method:o.payment.method}:null});
+  const result={id:o.id,status:o.status,customerName:o.customerName,product:o.product,quantity:o.quantity,acceptedQuantity:o.acceptedQuantity,deliveredQuantity:o.deliveredQuantity,unitPricePaisa:o.unitPricePaisaSnapshot,productSubtotalPaisa:o.productSubtotalPaisaSnapshot,deliveryFeePaisa:o.deliveryFeePaisa,campaign:o.campaign,business:o.business,payment:o.payment?{status:o.payment.status,amountPaisa:o.payment.amountPaisa,method:o.payment.method}:null};\n  if(o.status==="PAYMENT_PENDING")result.paymentInstructions=paymentInstructions();\n  return json(res,200,result);
  }
  if(m==="POST"&&p==="/customer/confirm-order"){
   const b=await body(req),t=String(b.token||"");
