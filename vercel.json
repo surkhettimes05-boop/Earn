@@ -1,1 +1,21 @@
-{"functions":{"api/index.js":{"maxDuration":10}},"rewrites":[{"source":"/api/:path*","destination":"/api/index.js"}]}
+{
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 10
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index.js"
+    },
+    {
+      "source": "/confirm-order",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/",
+      "destination": "/index.html"
+    }
+  ]
+}
