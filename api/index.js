@@ -8,7 +8,8 @@ if(process.env.NODE_ENV!=="production")global.__earnDb=db;
 
 const json=(res,status,data)=>{res.statusCode=status;res.setHeader("content-type","application/json");res.end(JSON.stringify(data,(_,v)=>typeof v==="bigint"?v.toString():v))};
 const body=async req=>{if(req.body)return req.body;let s="";for await(const c of req)s+=c;if(s.length>1e6)throw Object.assign(new Error("Payload too large"),{status:413});return s?JSON.parse(s):{}};
-const path=req=>new URL(req.url,"http://x").pathname.replace(/^\/api/,"");
+const url=req=>new URL(req.url,"http://x");
+const path=req=>url(req).pathname.replace(/^\/api/,"");
 const cleanPhone=p=>String(p||"").replace(/\D/g,"");
 const validPhone=p=>/^9779[678]\d{8}$/.test(p)||/^9[678]\d{8}$/.test(p);
 const hashPhone=p=>crypto.createHash("sha256").update(cleanPhone(p)).digest("hex");
@@ -47,6 +48,65 @@ module.exports=async(req,res)=>{try{
  if(m==="GET"&&p==="/campaigns"){
   const rows=await db.campaign.findMany({where:{status:"LIVE"},include:{business:{select:{name:true,verified:true}}},orderBy:{createdAt:"desc"}});
   return json(res,200,rows);
+ }
+
+ // Customer endpoints are intentionally public but protected by a high-entropy order token.
+ if(m==="GET"&&p==="/customer/order"){
+  const t=url(req).searchParams.get("token")||"";
+  if(!text(t,20,200))return json(res,400,{error:"Invalid order token"});
+  const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(t)},include:{campaign:{select:{title:true,unitLabel:true}},business:{select:{name:true}},payment:true,logistics:true}});
+  if(!o)return json(res,404,{error:"Order not found"});
+  return json(res,200,{id:o.id,status:o.status,customerName:o.customerName,product:o.product,quantity:o.quantity,acceptedQuantity:o.acceptedQuantity,deliveredQuantity:o.deliveredQuantity,unitPricePaisa:o.unitPricePaisaSnapshot,productSubtotalPaisa:o.productSubtotalPaisaSnapshot,deliveryFeePaisa:o.deliveryFeePaisa,campaign:o.campaign,business:o.business,payment:o.payment?{status:o.payment.status,amountPaisa:o.payment.amountPaisa,method:o.payment.method}:null});
+ }
+ if(m==="POST"&&p==="/customer/confirm-order"){
+  const b=await body(req),t=String(b.token||"");
+  if(!text(t,20,200))return json(res,400,{error:"Invalid order token"});
+  const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(t)}});
+  if(!o)return json(res,404,{error:"Order not found"});
+  if(o.status!=="SUBMITTED"&&o.status!=="CUSTOMER_CONFIRMED")return json(res,409,{error:"Order can no longer be confirmed"});
+  if(o.status==="CUSTOMER_CONFIRMED")return json(res,200,{id:o.id,status:o.status});
+  const pin=String(crypto.randomInt(100000,1000000));
+  const x=await db.order.update({where:{id:o.id},data:{status:"CUSTOMER_CONFIRMED",customerConfirmedAt:new Date(),deliveryPinHash:hashSecret(pin)}});
+  await db.orderEvent.create({data:{orderId:o.id,type:"CUSTOMER_CONFIRMED",actorRole:"CUSTOMER"}});
+  return json(res,200,{id:x.id,status:x.status,deliveryPin:pin});
+ }
+ if(m==="POST"&&p==="/customer/payment"){
+  const b=await body(req),t=String(b.token||"");
+  if(!text(t,20,200)||!text(b.reference,3,120)||!text(b.method,2,40))return json(res,400,{error:"Payment method and reference are required"});
+  const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(t)},include:{payment:true}});
+  if(!o)return json(res,404,{error:"Order not found"});
+  if(!["PAYMENT_PENDING","ACCEPTED"].includes(o.status)||!o.payment)return json(res,409,{error:"This order is not awaiting payment"});
+  const pay=await db.payment.update({where:{orderId:o.id},data:{status:"SUBMITTED",method:b.method.trim(),reference:b.reference.trim(),submittedAt:new Date()}});
+  await db.orderEvent.create({data:{orderId:o.id,type:"PAYMENT_SUBMITTED",actorRole:"CUSTOMER",metadata:{method:b.method.trim()}}});
+  return json(res,200,pay);
+ }
+ if(m==="POST"&&p==="/customer/verify-delivery"){
+  const b=await body(req),t=String(b.token||""),qty=Number(b.quantity),pin=String(b.deliveryPin||"");
+  if(!text(t,20,200)||!Number.isInteger(qty)||qty<0||!/^[0-9]{6}$/.test(pin))return json(res,400,{error:"Quantity and 6-digit delivery PIN are required"});
+  const result=await db.$transaction(async tx=>{
+   const o=await tx.order.findUnique({where:{customerConfirmTokenHash:hashSecret(t)},include:{campaign:true,payment:true,logistics:true}});
+   if(!o)throw Object.assign(new Error("Order not found"),{status:404});
+   if(!["DELIVERED","OUT_FOR_DELIVERY"].includes(o.status))throw Object.assign(new Error("Order is not ready for delivery verification"),{status:409});
+   if(hashSecret(pin)!==o.deliveryPinHash)throw Object.assign(new Error("Incorrect delivery PIN"),{status:409});
+   if(qty>(o.pickedUpQuantity??o.acceptedQuantity??o.quantity))throw Object.assign(new Error("Verified quantity exceeds picked-up quantity"),{status:409});
+   const unit=BigInt(o.unitPricePaisaSnapshot||0),sale=unit*BigInt(qty);
+   let totalCommission;
+   if(o.commissionBasisSnapshot==="PER_UNIT")totalCommission=BigInt(o.businessCommissionPaisaSnapshot||0)*BigInt(qty);
+   else if(o.commissionBasisSnapshot==="PERCENT_GMV")totalCommission=(sale*BigInt(o.businessCommissionBpsSnapshot||0)+5000n)/10000n;
+   else totalCommission=qty>0?BigInt(o.totalCommissionPaisaSnapshot||0):0n;
+   const share=BigInt(o.earnerShareBpsSnapshot||10000),earner=(totalCommission*share+5000n)/10000n,platform=totalCommission-earner,merchant=sale-totalCommission;
+   const picked=o.pickedUpQuantity??o.acceptedQuantity??o.quantity,returned=Math.max(0,picked-qty),next=qty===picked?"VERIFIED":"PARTIALLY_DELIVERED";
+   await tx.order.update({where:{id:o.id},data:{status:next,deliveredQuantity:qty,returnedQuantity:returned,verifiedAt:new Date(),deliveryVerifiedAt:new Date(),earnerRewardPaisaSnapshot:earner,platformFeePaisaSnapshot:platform,merchantSettlementPaisaSnapshot:merchant}});
+   await tx.reward.upsert({where:{orderId:o.id},create:{orderId:o.id,userId:o.earnerId,amountPaisa:earner,status:"EARNED"},update:{amountPaisa:earner,status:"EARNED"}});
+   await tx.ledgerEntry.upsert({where:{idempotencyKey:"reward:order:"+o.id},create:{userId:o.earnerId,kind:"REWARD_EARNED",amountPaisa:earner,referenceType:"ORDER",referenceId:o.id,idempotencyKey:"reward:order:"+o.id},update:{amountPaisa:earner}});
+   await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"MERCHANT"}},create:{orderId:o.id,partyType:"MERCHANT",partyId:o.businessId,amountPaisa:merchant,status:"PAYABLE"},update:{amountPaisa:merchant,status:"PAYABLE"}});
+   await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"EARNER"}},create:{orderId:o.id,partyType:"EARNER",partyId:o.earnerId,amountPaisa:earner,status:"PAYABLE"},update:{amountPaisa:earner,status:"PAYABLE"}});
+   await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"PLATFORM"}},create:{orderId:o.id,partyType:"PLATFORM",amountPaisa:platform,status:"PAYABLE"},update:{amountPaisa:platform,status:"PAYABLE"}});
+   if(o.logistics)await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"TRANSPORTER"}},create:{orderId:o.id,partyType:"TRANSPORTER",amountPaisa:o.logistics.transporterCostPaisa,status:"PAYABLE"},update:{amountPaisa:o.logistics.transporterCostPaisa,status:"PAYABLE"}});
+   await tx.orderEvent.create({data:{orderId:o.id,type:next,actorRole:"CUSTOMER",metadata:{verifiedQuantity:qty,returnedQuantity:returned}}});
+   return tx.order.findUnique({where:{id:o.id},include:{reward:true,settlements:true}});
+  });
+  return json(res,200,result);
  }
 
  const session=requireAuth(req);
@@ -144,64 +204,68 @@ module.exports=async(req,res)=>{try{
   return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
  }
 
- if(m==="GET"&&p==="/customer/order"){
-  const tokenValue=u.searchParams.get("token")||"";
-  if(!text(tokenValue,20,200))return json(res,400,{error:"Invalid confirmation token"});
-  const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(tokenValue)},include:{campaign:{select:{title:true}},business:{select:{name:true}}}});
-  if(!o)return json(res,404,{error:"Order confirmation not found"});
-  return json(res,200,{id:o.id,status:o.status,customerName:o.customerName,product:o.product,quantity:o.quantity,campaign:o.campaign,business:o.business});
+ if(m==="POST"&&p==="/orders"){
+  requireRole(session,"EARNER"); const b=await body(req);
+  if(!b.idempotencyKey)return json(res,400,{error:"idempotencyKey required"});
+  if(!text(b.customerName,2,80)||!validPhone(cleanPhone(b.customerPhone))||!text(b.product,2,120)||!Number.isInteger(Number(b.quantity))||Number(b.quantity)<1)return json(res,400,{error:"Enter valid order details"});
+  const existing=await db.order.findUnique({where:{idempotencyKey:b.idempotencyKey}}); if(existing)return json(res,200,existing);
+  const a=await db.attribution.findUnique({where:{code:b.attributionCode}}); if(!a||a.earnerId!==session.sub)return json(res,400,{error:"Invalid attribution"});
+  const c=await db.campaign.findFirst({where:{id:a.campaignId,status:"LIVE",type:"ORDER"}}); if(!c)return json(res,409,{error:"Order campaign unavailable"});
+  const phoneHash=hashPhone(b.customerPhone),quantity=Number(b.quantity),quote=commissionQuote(c,quantity),subtotal=BigInt(c.unitPricePaisa||0)*BigInt(quantity);
+  const duplicate=await db.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{notIn:["CANCELLED","RETURNED"]}}}); if(duplicate)return json(res,409,{error:"This customer already has an active or completed order"});
+  const confirmToken=crypto.randomBytes(24).toString("hex");
+  const o=await db.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
+  await db.orderEvent.create({data:{orderId:o.id,type:"ORDER_SUBMITTED",actorRole:"EARNER",actorId:session.sub}});
+  return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
  }
- if(m==="POST"&&p==="/customer/confirm-order"){
-  const b=await body(req);
-  if(!text(b.token,20,200))return json(res,400,{error:"Invalid confirmation token"});
-  const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(b.token)},include:{campaign:{select:{title:true}},business:{select:{name:true}}}});
-  if(!o)return json(res,404,{error:"Order confirmation not found"});
-  if(o.status==="CUSTOMER_CONFIRMED")return json(res,200,{id:o.id,status:o.status});
-  if(o.status!=="SUBMITTED")return json(res,409,{error:"Order can no longer be confirmed"});
-  const pin=String(crypto.randomInt(100000,1000000));
-  await db.order.update({where:{id:o.id},data:{status:"CUSTOMER_CONFIRMED",customerConfirmedAt:new Date(),deliveryPinHash:hashSecret(pin)}});
-  return json(res,200,{id:o.id,status:"CUSTOMER_CONFIRMED",deliveryPin:pin});
+
+ const action=p.match(/^\/orders\/([^/]+)\/(accept|ready|cancel)$/);
+ if(m==="POST"&&action){
+  requireRole(session,"BUSINESS","ADMIN"); const b=await body(req);
+  const o=await db.order.findUnique({where:{id:action[1]},include:{business:true}});
+  if(!o)return json(res,404,{error:"Order not found"}); if(session.role!=="ADMIN"&&o.business.ownerId!==session.sub)return json(res,403,{error:"Forbidden"});
+  if(action[2]==="accept"){
+   if(o.status!=="CUSTOMER_CONFIRMED")return json(res,409,{error:"Customer must confirm first"});
+   const qty=Number(b.quantity||o.quantity); if(!Number.isInteger(qty)||qty<1||qty>o.quantity)return json(res,400,{error:"Invalid accepted quantity"});
+   const amount=BigInt(o.unitPricePaisaSnapshot||0)*BigInt(qty)+BigInt(o.deliveryFeePaisa||0);
+   const x=await db.$transaction(async tx=>{const z=await tx.order.update({where:{id:o.id},data:{status:"PAYMENT_PENDING",acceptedQuantity:qty,acceptedAt:new Date()}});await tx.payment.upsert({where:{orderId:o.id},create:{orderId:o.id,amountPaisa:amount,method:"BANK_OR_QR"},update:{amountPaisa:amount,status:"PENDING"}});await tx.orderEvent.create({data:{orderId:o.id,type:"BUSINESS_ACCEPTED",actorRole:session.role,actorId:session.sub,metadata:{acceptedQuantity:qty}}});return z}); return json(res,200,x);
+  }
+  if(action[2]==="ready"){
+   if(o.status!=="PAID")return json(res,409,{error:"Payment must be confirmed first"});
+   const x=await db.order.update({where:{id:o.id},data:{status:"READY_FOR_PICKUP",readyForPickupAt:new Date()}});await db.orderEvent.create({data:{orderId:o.id,type:"READY_FOR_PICKUP",actorRole:session.role,actorId:session.sub}});return json(res,200,x);
+  }
+  if(["PICKED_UP","OUT_FOR_DELIVERY","DELIVERED","VERIFIED","PARTIALLY_DELIVERED"].includes(o.status))return json(res,409,{error:"After pickup this order must be reconciled, not cancelled"});
+  if(!text(b.reason,3,300))return json(res,400,{error:"Cancellation reason is required"});
+  const x=await db.order.update({where:{id:o.id},data:{status:"CANCELLED",cancelledAt:new Date(),cancelReason:b.reason.trim()}});await db.orderEvent.create({data:{orderId:o.id,type:"CANCELLED",actorRole:session.role,actorId:session.sub,metadata:{reason:b.reason.trim()}}});return json(res,200,x);
  }
- const tr=p.match(/^\/orders\/([^/]+)\/(accept|deliver|cancel)$/);
- if(m==="POST"&&tr){
-  requireRole(session,"BUSINESS","ADMIN");
-  const desired={accept:"ACCEPTED",deliver:"DELIVERED",cancel:"CANCELLED"}[tr[2]];
-  const result=await db.$transaction(async tx=>{
-   const o=await tx.order.findUnique({where:{id:tr[1]},include:{campaign:true,business:true}});
-   if(!o)throw Object.assign(new Error("Order not found"),{status:404});
-   if(session.role!=="ADMIN"&&o.business.ownerId!==session.sub)throw Object.assign(new Error("Forbidden"),{status:403});
-   if(o.status===desired)return o;
-   if(desired==="ACCEPTED"){
-    if(o.status!=="CUSTOMER_CONFIRMED")throw Object.assign(new Error("Customer must confirm the order first"),{status:409});
-    return tx.order.update({where:{id:o.id},data:{status:"ACCEPTED"}});
-   }
-   if(desired==="DELIVERED"){
-    if(o.status!=="ACCEPTED")throw Object.assign(new Error("Order must be accepted first"),{status:409});
-    const b=await body(req);
-    if(!/^\d{6}$/.test(String(b.deliveryPin||""))||hashSecret(b.deliveryPin)!==o.deliveryPinHash)throw Object.assign(new Error("Correct customer delivery PIN required"),{status:409});
-   } else assertTransition(o.status,desired);
-   if(desired!=="DELIVERED")return tx.order.update({where:{id:o.id},data:{status:desired}});
-   const spec=rewardForDelivery(o,o.campaign);
-   await tx.$queryRawUnsafe('SELECT "id" FROM "Campaign" WHERE "id" = $1 FOR UPDATE',o.campaignId);
-   const count=await tx.reward.count({where:{order:{campaignId:o.campaignId},status:{in:["EARNED","PAYABLE","PAID"]}}});
-   if(count>=o.campaign.cap)throw Object.assign(new Error("Campaign reward cap reached"),{status:409});
-   await tx.order.update({where:{id:o.id},data:{status:"DELIVERED",deliveryVerifiedAt:new Date()}});
-   await tx.reward.create({data:{orderId:o.id,userId:o.earnerId,amountPaisa:spec.amountPaisa,status:"EARNED"}});
-   await tx.ledgerEntry.create({data:{userId:o.earnerId,kind:"REWARD_EARNED",amountPaisa:spec.amountPaisa,referenceType:"ORDER",referenceId:o.id,idempotencyKey:spec.ledgerKey}});
-   return tx.order.findUnique({where:{id:o.id},include:{reward:true}});
-  });
-  return json(res,200,result);
- }
+
+ const payConfirm=p.match(/^\/orders\/([^/]+)\/confirm-payment$/);
+ if(m==="POST"&&payConfirm){requireRole(session,"ADMIN");const o=await db.order.findUnique({where:{id:payConfirm[1]},include:{payment:true}});if(!o||!o.payment)return json(res,404,{error:"Payment not found"});if(o.payment.status!=="SUBMITTED")return json(res,409,{error:"Customer payment reference has not been submitted"});const x=await db.$transaction(async tx=>{await tx.payment.update({where:{orderId:o.id},data:{status:"CONFIRMED",confirmedAt:new Date()}});const z=await tx.order.update({where:{id:o.id},data:{status:"PAID",paymentConfirmedAt:new Date()}});await tx.orderEvent.create({data:{orderId:o.id,type:"PAYMENT_CONFIRMED",actorRole:"ADMIN",actorId:session.sub}});return z});return json(res,200,x)}
+
+ const assign=p.match(/^\/orders\/([^/]+)\/assign-logistics$/);
+ if(m==="POST"&&assign){requireRole(session,"ADMIN");const b=await body(req),o=await db.order.findUnique({where:{id:assign[1]}});if(!o||o.status!=="READY_FOR_PICKUP")return json(res,409,{error:"Order must be ready for pickup"});if(!text(b.transporterName,2,100))return json(res,400,{error:"Transporter name required"});const code=String(crypto.randomInt(100000,1000000)),quoted=BigInt(Math.round(Number(b.quotedFeeNpr||0)*100)),cost=BigInt(Math.round(Number(b.transporterCostNpr||0)*100));const l=await db.logisticsAssignment.upsert({where:{orderId:o.id},create:{orderId:o.id,transporterName:b.transporterName.trim(),transporterPhone:b.transporterPhone||null,quotedFeePaisa:quoted,transporterCostPaisa:cost,pickupCodeHash:hashSecret(code)},update:{transporterName:b.transporterName.trim(),transporterPhone:b.transporterPhone||null,quotedFeePaisa:quoted,transporterCostPaisa:cost,pickupCodeHash:hashSecret(code)}});await db.order.update({where:{id:o.id},data:{deliveryFeePaisa:quoted}});await db.orderEvent.create({data:{orderId:o.id,type:"LOGISTICS_ASSIGNED",actorRole:"ADMIN",actorId:session.sub}});return json(res,200,{...l,pickupCode:code})}
+
+ const pickup=p.match(/^\/orders\/([^/]+)\/pickup$/);
+ if(m==="POST"&&pickup){requireRole(session,"ADMIN");const b=await body(req),o=await db.order.findUnique({where:{id:pickup[1]},include:{logistics:true}});if(!o||o.status!=="READY_FOR_PICKUP"||!o.logistics)return json(res,409,{error:"Logistics must be assigned"});if(hashSecret(String(b.pickupCode||""))!==o.logistics.pickupCodeHash)return json(res,409,{error:"Incorrect pickup code"});const qty=Number(b.quantity);if(!Number.isInteger(qty)||qty<1||qty>(o.acceptedQuantity||o.quantity))return json(res,400,{error:"Invalid pickup quantity"});const x=await db.$transaction(async tx=>{await tx.logisticsAssignment.update({where:{orderId:o.id},data:{status:"PICKED_UP",pickedUpAt:new Date()}});const z=await tx.order.update({where:{id:o.id},data:{status:"PICKED_UP",pickedUpQuantity:qty,pickedUpAt:new Date()}});await tx.orderEvent.create({data:{orderId:o.id,type:"PICKED_UP",actorRole:"ADMIN",actorId:session.sub,metadata:{quantity:qty}}});return z});return json(res,200,x)}
+
+ const out=p.match(/^\/orders\/([^/]+)\/out-for-delivery$/);
+ if(m==="POST"&&out){requireRole(session,"ADMIN");const o=await db.order.findUnique({where:{id:out[1]}});if(!o||o.status!=="PICKED_UP")return json(res,409,{error:"Order must be picked up"});await db.logisticsAssignment.update({where:{orderId:o.id},data:{status:"OUT_FOR_DELIVERY"}});return json(res,200,await db.order.update({where:{id:o.id},data:{status:"OUT_FOR_DELIVERY"}}))}
+
+ const delivered=p.match(/^\/orders\/([^/]+)\/delivered$/);
+ if(m==="POST"&&delivered){requireRole(session,"ADMIN");const o=await db.order.findUnique({where:{id:delivered[1]}});if(!o||!["PICKED_UP","OUT_FOR_DELIVERY"].includes(o.status))return json(res,409,{error:"Order is not in delivery"});await db.logisticsAssignment.update({where:{orderId:o.id},data:{status:"DELIVERED",deliveredAt:new Date()}});const x=await db.order.update({where:{id:o.id},data:{status:"DELIVERED",deliveredAt:new Date()}});await db.orderEvent.create({data:{orderId:o.id,type:"DELIVERED",actorRole:"ADMIN",actorId:session.sub}});return json(res,200,x)}
+
+ const dispute=p.match(/^\/orders\/([^/]+)\/dispute$/);
+ if(m==="POST"&&dispute){const b=await body(req);if(!text(b.reason,3,120))return json(res,400,{error:"Dispute reason required"});const o=await db.order.findUnique({where:{id:dispute[1]},include:{business:true}});if(!o)return json(res,404,{error:"Order not found"});if(session.role==="EARNER"&&o.earnerId!==session.sub||session.role==="BUSINESS"&&o.business.ownerId!==session.sub)return json(res,403,{error:"Forbidden"});const d=await db.dispute.create({data:{orderId:o.id,openedBy:session.role+":"+session.sub,reason:b.reason,details:b.details||null}});await db.order.update({where:{id:o.id},data:{status:"DISPUTED"}});return json(res,201,d)}
 
  if(m==="GET"&&p==="/me/orders"){
   requireRole(session,"EARNER");
-  return json(res,200,await db.order.findMany({where:{earnerId:session.sub},include:{campaign:{select:{title:true,rewardPaisa:true,commissionBasis:true,unitLabel:true}},reward:true},orderBy:{createdAt:"desc"}}));
+  return json(res,200,await db.order.findMany({where:{earnerId:session.sub},include:{campaign:{select:{title:true,rewardPaisa:true,commissionBasis:true,unitLabel:true}},reward:true,payment:true,logistics:true,settlements:true,disputes:{where:{status:"OPEN"}}},orderBy:{createdAt:"desc"}}));
  }
  if(m==="GET"&&p==="/business/orders"){
   requireRole(session,"BUSINESS");
   const biz=await db.business.findUnique({where:{ownerId:session.sub}});
   if(!biz)return json(res,409,{error:"Business profile required"});
-  return json(res,200,await db.order.findMany({where:{businessId:biz.id},include:{campaign:{select:{title:true,rewardPaisa:true,commissionBasis:true,unitLabel:true}},reward:true},orderBy:{createdAt:"desc"}}));
+  return json(res,200,await db.order.findMany({where:{businessId:biz.id},include:{campaign:{select:{title:true,rewardPaisa:true,commissionBasis:true,unitLabel:true}},reward:true,payment:true,logistics:true,settlements:true,disputes:{where:{status:"OPEN"}}},orderBy:{createdAt:"desc"}}));
  }
  if(m==="GET"&&p==="/business/campaigns"){
   requireRole(session,"BUSINESS");
