@@ -77,6 +77,18 @@ module.exports=async(req,res)=>{try{
   return json(res,200,await db.campaign.update({where:{id:c.id},data:{status:"LIVE"}}));
  }
 
+ const ctl=p.match(/^\/campaigns\/([^/]+)\/(pause|resume|close)$/);
+ if(m==="POST"&&ctl){
+  requireRole(session,"BUSINESS","ADMIN");
+  const c=await db.campaign.findUnique({where:{id:ctl[1]},include:{business:true}});
+  if(!c)return json(res,404,{error:"Campaign not found"});
+  if(session.role!=="ADMIN"&&c.business.ownerId!==session.sub)return json(res,403,{error:"Forbidden"});
+  const next={pause:"PAUSED",resume:"LIVE",close:"CLOSED"}[ctl[2]];
+  if(c.status==="CLOSED")return json(res,409,{error:"Closed campaigns cannot be reopened"});
+  if(ctl[2]==="resume"&&c.status!=="PAUSED")return json(res,409,{error:"Only paused campaigns can resume"});
+  return json(res,200,await db.campaign.update({where:{id:c.id},data:{status:next}}));
+ }
+
  const start=p.match(/^\/campaigns\/([^/]+)\/start$/);
  if(m==="POST"&&start){
   requireRole(session,"EARNER");
@@ -98,7 +110,12 @@ module.exports=async(req,res)=>{try{
   if(!a||a.earnerId!==session.sub)return json(res,400,{error:"Invalid attribution"});
   const c=await db.campaign.findFirst({where:{id:a.campaignId,status:"LIVE",type:"ORDER"}});
   if(!c)return json(res,409,{error:"Order campaign unavailable"});
-  const o=await db.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:hashPhone(b.customerPhone),product:b.product.trim(),quantity:Number(b.quantity),idempotencyKey:b.idempotencyKey}});
+  const phoneHash=hashPhone(b.customerPhone);
+  const duplicate=await db.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{in:["SUBMITTED","ACCEPTED","DELIVERED"]}}});
+  if(duplicate)return json(res,409,{error:"This customer already has an active or completed order for this opportunity"});
+  const delivered=await db.reward.count({where:{order:{campaignId:c.id},status:{in:["EARNED","PAYABLE","PAID"]}}});
+  if(delivered>=c.cap)return json(res,409,{error:"Campaign reward cap reached"});
+  const o=await db.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,product:b.product.trim(),quantity:Number(b.quantity),idempotencyKey:b.idempotencyKey}});
   return json(res,201,o);
  }
 
@@ -114,6 +131,7 @@ module.exports=async(req,res)=>{try{
    assertTransition(o.status,desired);
    if(desired!=="DELIVERED")return tx.order.update({where:{id:o.id},data:{status:desired}});
    const spec=rewardForDelivery(o,o.campaign);
+   await tx.$queryRawUnsafe('SELECT "id" FROM "Campaign" WHERE "id" = $1 FOR UPDATE',o.campaignId);
    const count=await tx.reward.count({where:{order:{campaignId:o.campaignId},status:{in:["EARNED","PAYABLE","PAID"]}}});
    if(count>=o.campaign.cap)throw Object.assign(new Error("Campaign reward cap reached"),{status:409});
    await tx.order.update({where:{id:o.id},data:{status:"DELIVERED"}});
@@ -132,13 +150,39 @@ module.exports=async(req,res)=>{try{
   requireRole(session,"BUSINESS");
   const biz=await db.business.findUnique({where:{ownerId:session.sub}});
   if(!biz)return json(res,409,{error:"Business profile required"});
-  return json(res,200,await db.order.findMany({where:{businessId:biz.id},include:{campaign:{select:{title:true,rewardPaisa:true}}},orderBy:{createdAt:"desc"}}));
+  return json(res,200,await db.order.findMany({where:{businessId:biz.id},include:{campaign:{select:{title:true,rewardPaisa:true}},reward:true},orderBy:{createdAt:"desc"}}));
  }
  if(m==="GET"&&p==="/business/campaigns"){
   requireRole(session,"BUSINESS");
   const biz=await db.business.findUnique({where:{ownerId:session.sub}});
   if(!biz)return json(res,409,{error:"Business profile required"});
   return json(res,200,await db.campaign.findMany({where:{businessId:biz.id},orderBy:{createdAt:"desc"}}));
+ }
+ const payable=p.match(/^\/rewards\/([^/]+)\/payable$/);
+ if(m==="POST"&&payable){
+  requireRole(session,"BUSINESS","ADMIN");
+  const r=await db.reward.findUnique({where:{id:payable[1]},include:{order:{include:{business:true}}}});
+  if(!r)return json(res,404,{error:"Reward not found"});
+  if(session.role!=="ADMIN"&&r.order.business.ownerId!==session.sub)return json(res,403,{error:"Forbidden"});
+  if(r.status==="PAYABLE")return json(res,200,r);
+  if(r.status!=="EARNED")return json(res,409,{error:"Only earned rewards can become payable"});
+  return json(res,200,await db.reward.update({where:{id:r.id},data:{status:"PAYABLE"}}));
+ }
+ const paid=p.match(/^\/rewards\/([^/]+)\/paid$/);
+ if(m==="POST"&&paid){
+  requireRole(session,"BUSINESS","ADMIN");
+  const result=await db.$transaction(async tx=>{
+   const r=await tx.reward.findUnique({where:{id:paid[1]},include:{order:{include:{business:true}}}});
+   if(!r)throw Object.assign(new Error("Reward not found"),{status:404});
+   if(session.role!=="ADMIN"&&r.order.business.ownerId!==session.sub)throw Object.assign(new Error("Forbidden"),{status:403});
+   if(r.status==="PAID")return r;
+   if(r.status!=="PAYABLE")throw Object.assign(new Error("Reward must be payable before marking paid"),{status:409});
+   const key="payout:reward:"+r.id;
+   await tx.reward.update({where:{id:r.id},data:{status:"PAID"}});
+   await tx.ledgerEntry.create({data:{userId:r.userId,kind:"PAYOUT",amountPaisa:-r.amountPaisa,referenceType:"REWARD",referenceId:r.id,idempotencyKey:key}});
+   return tx.reward.findUnique({where:{id:r.id}});
+  });
+  return json(res,200,result);
  }
  if(m==="GET"&&p==="/me/earnings"){
   requireRole(session,"EARNER");
