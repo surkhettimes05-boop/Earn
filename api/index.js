@@ -217,6 +217,21 @@ module.exports=async(req,res)=>{try{
   }
  }
 
+ const reissue=p.match(/^\/orders\/([^/]+)\/reissue-confirmation$/);
+ if(m==="POST"&&reissue){
+  requireRole(session,"EARNER");
+  const o=await db.order.findUnique({where:{id:reissue[1]}});
+  if(!o)return json(res,404,{error:"Order not found"});
+  if(o.earnerId!==session.sub)return json(res,403,{error:"Forbidden"});
+  if(o.status!=="SUBMITTED")return json(res,409,{error:"Buyer link can only be re-issued before buyer confirmation"});
+  const confirmToken=crypto.randomBytes(24).toString("hex");
+  await db.$transaction(async tx=>{
+   await tx.order.update({where:{id:o.id},data:{customerConfirmTokenHash:hashSecret(confirmToken)}});
+   await tx.orderEvent.create({data:{orderId:o.id,type:"CUSTOMER_LINK_REISSUED",actorRole:"EARNER",actorId:session.sub}});
+  });
+  return json(res,200,{id:o.id,status:o.status,customerConfirmationPath:"/confirm-order?token="+confirmToken});
+ }
+
  const action=p.match(/^\/orders\/([^/]+)\/(accept|ready|cancel)$/);
  if(m==="POST"&&action){
   requireRole(session,"BUSINESS","ADMIN"); const b=await body(req);
