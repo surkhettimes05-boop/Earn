@@ -2,7 +2,7 @@ const {PrismaClient}=require("@prisma/client");
 const bcrypt=require("bcryptjs");
 const crypto=require("crypto");
 const {sign,requireAuth,requireRole}=require("../lib/auth");
-const {assertTransition,rewardForDelivery}=require("../lib/domain");
+const {assertTransition,commissionQuote,rewardForDelivery}=require("../lib/domain");
 const db=global.__earnDb||new PrismaClient();
 if(process.env.NODE_ENV!=="production")global.__earnDb=db;
 
@@ -64,8 +64,23 @@ module.exports=async(req,res)=>{try{
   if(!["ORDER","LEAD","CONTENT","REFERRAL"].includes(b.type))return json(res,400,{error:"Invalid campaign type"});
   if(!text(b.title,3,100)||!text(b.city,2,80)||!text(b.successRule,5,1000))return json(res,400,{error:"Complete the campaign details"});
   const reward=Number(b.rewardNpr),cap=Number(b.cap);
-  if(!Number.isFinite(reward)||reward<=0||!Number.isInteger(cap)||cap<1)return json(res,400,{error:"Reward and cap must be positive"});
-  const row=await db.campaign.create({data:{businessId:biz.id,type:b.type,title:b.title.trim(),city:b.city.trim(),rewardPaisa:BigInt(Math.round(reward*100)),cap,successRule:b.successRule.trim(),status:"DRAFT"}});
+  if(!Number.isInteger(cap)||cap<1)return json(res,400,{error:"Cap must be positive"});
+  let commercial={commissionBasis:"FIXED_ORDER",businessCommissionPaisa:null,businessCommissionBps:null,unitPricePaisa:null,unitLabel:null,earnerShareBps:10000};
+  let rewardPaisa;
+  if(b.type==="ORDER"){
+   const basis=String(b.commissionBasis||"PER_UNIT"),unitPrice=Number(b.unitPriceNpr),businessCommission=Number(b.businessCommissionNpr),businessPercent=Number(b.businessCommissionPercent),earnerPercent=Number(b.earnerSharePercent);
+   if(!["FIXED_ORDER","PER_UNIT","PERCENT_GMV"].includes(basis))return json(res,400,{error:"Choose a valid commission structure"});
+   if(!Number.isFinite(earnerPercent)||earnerPercent<=0||earnerPercent>100)return json(res,400,{error:"Earner share must be between 0 and 100%"});
+   if((basis==="PER_UNIT"||basis==="PERCENT_GMV")&&(!Number.isFinite(unitPrice)||unitPrice<=0))return json(res,400,{error:"Enter the product price"});
+   if(basis==="PERCENT_GMV"&&(!Number.isFinite(businessPercent)||businessPercent<=0||businessPercent>100))return json(res,400,{error:"Enter a valid commission percentage"});
+   if(basis!=="PERCENT_GMV"&&(!Number.isFinite(businessCommission)||businessCommission<=0))return json(res,400,{error:"Enter what the business will pay"});
+   commercial={commissionBasis:basis,unitLabel:text(b.unitLabel,1,30)?b.unitLabel.trim():null,unitPricePaisa:Number.isFinite(unitPrice)&&unitPrice>0?BigInt(Math.round(unitPrice*100)):null,businessCommissionPaisa:basis!=="PERCENT_GMV"?BigInt(Math.round(businessCommission*100)):null,businessCommissionBps:basis==="PERCENT_GMV"?Math.round(businessPercent*100):null,earnerShareBps:Math.round(earnerPercent*100)};
+   const preview=commissionQuote(commercial,1); rewardPaisa=preview.earnerRewardPaisa;
+  }else{
+   if(!Number.isFinite(reward)||reward<=0)return json(res,400,{error:"Reward must be positive"});
+   rewardPaisa=BigInt(Math.round(reward*100));
+  }
+  const row=await db.campaign.create({data:{businessId:biz.id,type:b.type,title:b.title.trim(),city:b.city.trim(),rewardPaisa,cap,successRule:b.successRule.trim(),status:"DRAFT",...commercial}});
   return json(res,201,row);
  }
 
@@ -112,12 +127,12 @@ module.exports=async(req,res)=>{try{
   const c=await db.campaign.findFirst({where:{id:a.campaignId,status:"LIVE",type:"ORDER"}});
   if(!c)return json(res,409,{error:"Order campaign unavailable"});
   const phoneHash=hashPhone(b.customerPhone);
-  const duplicate=await db.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{in:["SUBMITTED","ACCEPTED","DELIVERED"]}}});
+  const duplicate=await db.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{in:["SUBMITTED","CUSTOMER_CONFIRMED","ACCEPTED","DELIVERED"]}}});
   if(duplicate)return json(res,409,{error:"This customer already has an active or completed order for this opportunity"});
   const delivered=await db.reward.count({where:{order:{campaignId:c.id},status:{in:["EARNED","PAYABLE","PAID"]}}});
   if(delivered>=c.cap)return json(res,409,{error:"Campaign reward cap reached"});
-  const confirmToken=crypto.randomBytes(24).toString("hex");
-  const o=await db.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity:Number(b.quantity),idempotencyKey:b.idempotencyKey}});
+  const confirmToken=crypto.randomBytes(24).toString("hex"),quantity=Number(b.quantity),quote=commissionQuote(c,quantity);
+  const o=await db.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa}});
   return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
  }
 
@@ -172,13 +187,13 @@ module.exports=async(req,res)=>{try{
 
  if(m==="GET"&&p==="/me/orders"){
   requireRole(session,"EARNER");
-  return json(res,200,await db.order.findMany({where:{earnerId:session.sub},include:{campaign:{select:{title:true,rewardPaisa:true}},reward:true},orderBy:{createdAt:"desc"}}));
+  return json(res,200,await db.order.findMany({where:{earnerId:session.sub},include:{campaign:{select:{title:true,rewardPaisa:true,commissionBasis:true,unitLabel:true}},reward:true},orderBy:{createdAt:"desc"}}));
  }
  if(m==="GET"&&p==="/business/orders"){
   requireRole(session,"BUSINESS");
   const biz=await db.business.findUnique({where:{ownerId:session.sub}});
   if(!biz)return json(res,409,{error:"Business profile required"});
-  return json(res,200,await db.order.findMany({where:{businessId:biz.id},include:{campaign:{select:{title:true,rewardPaisa:true}},reward:true},orderBy:{createdAt:"desc"}}));
+  return json(res,200,await db.order.findMany({where:{businessId:biz.id},include:{campaign:{select:{title:true,rewardPaisa:true,commissionBasis:true,unitLabel:true}},reward:true},orderBy:{createdAt:"desc"}}));
  }
  if(m==="GET"&&p==="/business/campaigns"){
   requireRole(session,"BUSINESS");
