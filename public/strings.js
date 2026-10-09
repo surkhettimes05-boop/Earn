@@ -18,5 +18,20 @@ window.EARN_STRINGS = {
   chooseProduct:"Choose a product to sell", orderCreated:"Sale created. Send this link to the buyer.", buyerMessage:"Please confirm your order here:",
   loadError:"Could not load this page. Try again.", retryLinkError:"The sale already exists, but its buyer link is no longer available. Open Orders and get the buyer link again.", capError:"This product has reached its sales limit.", duplicateError:"This buyer already has an active or completed order for this product.", statusSubmitted:"Waiting for buyer", statusConfirmed:"Buyer confirmed", statusAccepted:"Accepted",
   statusPayment:"Waiting for payment", statusPaid:"Paid", statusReady:"Ready for pickup", statusPicked:"Picked up", statusDelivery:"Out for delivery",
-  statusDelivered:"Delivered", statusVerified:"Completed", statusPartial:"Partly delivered", statusCancelled:"Cancelled", statusReturned:"Returned", statusDisputed:"Needs review"
+  statusDelivered:"Delivered", statusVerified:"Completed", statusPartial:"Partly delivered", statusCancelled:"Cancelled", statusReturned:"Returned", statusDisputed:"Needs review",
+  confirmOrderTitle:"Confirm your order", orderedFrom:"Ordered from", price:"Price", total:"Goods total",
+  yesOrder:"Yes, I placed this order", noOrder:"I did not place this order", confirmingOrder:"Confirming…", rejectingOrder:"Sending…",
+  confirmedNext:"Thanks. The business will review your order next. Come back to this link for payment and delivery updates.",
+  rejected:"This order has been cancelled. You do not need to do anything else.", refundReview:"Your payment reference was already submitted, so the order was not silently cancelled. A refund review has been opened.",
+  paymentTitle:"Pay EARN", paymentTrust:"Pay EARN, not the business. EARN confirms your payment, and pays the seller only after you confirm delivery.",
+  goods:"Goods", delivery:"Delivery by EARN", amountToPay:"Total to pay", paymentInstructions:"Payment instructions", paymentPlaceholder:"Payment instructions are not available from the API yet. Do not send money until EARN gives you verified payment details.",
+  paymentMethod:"Payment method", paymentReference:"Payment reference", submitPayment:"I have paid — submit reference", submittingPayment:"Submitting…",
+  paymentSubmitted:"Your payment reference was sent to EARN for confirmation.", rejectAfterPayment:"If this was not your order, reporting it now opens a refund review instead of silently cancelling it.",
+  deliveryTitle:"Confirm what you received", receivedQuantity:"Quantity actually received", deliveryPin:"6-digit delivery PIN", deliveryPinHelp:"Use the 6-digit delivery PIN shown to you after you confirmed this order. EARN uses it to verify delivery.",
+  confirmDelivery:"Confirm delivery", confirmingDelivery:"Confirming delivery…", deliveryComplete:"Delivery confirmed. Your order is complete.", partialDelivery:"You confirmed fewer items than ordered. EARN has recorded a partial delivery and any required refund/return will be reviewed.",
+  invalidLink:"This buyer link is invalid, expired, or has been replaced. Ask the seller for a new link.", statusTitle:"Order status",
+  waitingBusiness:"You confirmed the order. The business needs to accept it before payment.", paidMessage:"EARN has confirmed your payment. Your order is being prepared.", readyMessage:"Your order is ready for pickup and delivery.",
+  transitMessage:"Your order is on the way.", deliveredMessage:"Your order has been marked delivered. Confirm the quantity you actually received below.",
+  cancelledMessage:"This order has been cancelled. No further action is needed.", returnedMessage:"This order was returned.", disputedMessage:"This order needs review by EARN. If money was already sent, follow the refund instructions from EARN.",
+  completedMessage:"Delivery has been confirmed and this order is complete.", expiredMessage:"This order expired before buyer confirmation."
 };
