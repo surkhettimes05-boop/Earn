@@ -94,16 +94,17 @@ module.exports=async(req,res)=>{try{
    if(o.commissionBasisSnapshot==="PER_UNIT")totalCommission=BigInt(o.businessCommissionPaisaSnapshot||0)*BigInt(qty);
    else if(o.commissionBasisSnapshot==="PERCENT_GMV")totalCommission=(sale*BigInt(o.businessCommissionBpsSnapshot||0)+5000n)/10000n;
    else totalCommission=qty>0?BigInt(o.totalCommissionPaisaSnapshot||0):0n;
-   const share=BigInt(o.earnerShareBpsSnapshot||10000),earner=(totalCommission*share+5000n)/10000n,platform=totalCommission-earner,merchant=sale-totalCommission;
-   const picked=o.pickedUpQuantity??o.acceptedQuantity??o.quantity,returned=Math.max(0,picked-qty),next=qty===picked?"VERIFIED":"PARTIALLY_DELIVERED";
+   const share=BigInt(o.earnerShareBpsSnapshot||10000),earner=(totalCommission*share+5000n)/10000n,commissionPlatform=totalCommission-earner,merchant=sale-totalCommission;
+   const picked=o.pickedUpQuantity??o.acceptedQuantity??o.quantity,returned=Math.max(0,picked-qty),next=qty===picked?"VERIFIED":"PARTIALLY_DELIVERED",logisticsMargin=o.logistics?o.logistics.quotedFeePaisa-o.logistics.transporterCostPaisa:0n,platform=commissionPlatform+logisticsMargin,settleStatus=returned>0?"HELD":"PAYABLE",refund=unit*BigInt(returned);
    await tx.order.update({where:{id:o.id},data:{status:next,deliveredQuantity:qty,returnedQuantity:returned,verifiedAt:new Date(),deliveryVerifiedAt:new Date(),earnerRewardPaisaSnapshot:earner,platformFeePaisaSnapshot:platform,merchantSettlementPaisaSnapshot:merchant}});
    await tx.reward.upsert({where:{orderId:o.id},create:{orderId:o.id,userId:o.earnerId,amountPaisa:earner,status:"EARNED"},update:{amountPaisa:earner,status:"EARNED"}});
    await tx.ledgerEntry.upsert({where:{idempotencyKey:"reward:order:"+o.id},create:{userId:o.earnerId,kind:"REWARD_EARNED",amountPaisa:earner,referenceType:"ORDER",referenceId:o.id,idempotencyKey:"reward:order:"+o.id},update:{amountPaisa:earner}});
-   await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"MERCHANT"}},create:{orderId:o.id,partyType:"MERCHANT",partyId:o.businessId,amountPaisa:merchant,status:"PAYABLE"},update:{amountPaisa:merchant,status:"PAYABLE"}});
-   await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"EARNER"}},create:{orderId:o.id,partyType:"EARNER",partyId:o.earnerId,amountPaisa:earner,status:"PAYABLE"},update:{amountPaisa:earner,status:"PAYABLE"}});
-   await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"PLATFORM"}},create:{orderId:o.id,partyType:"PLATFORM",amountPaisa:platform,status:"PAYABLE"},update:{amountPaisa:platform,status:"PAYABLE"}});
-   if(o.logistics)await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"TRANSPORTER"}},create:{orderId:o.id,partyType:"TRANSPORTER",amountPaisa:o.logistics.transporterCostPaisa,status:"PAYABLE"},update:{amountPaisa:o.logistics.transporterCostPaisa,status:"PAYABLE"}});
-   await tx.orderEvent.create({data:{orderId:o.id,type:next,actorRole:"CUSTOMER",metadata:{verifiedQuantity:qty,returnedQuantity:returned}}});
+   await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"MERCHANT"}},create:{orderId:o.id,partyType:"MERCHANT",partyId:o.businessId,amountPaisa:merchant,status:settleStatus},update:{amountPaisa:merchant,status:settleStatus}});
+   await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"EARNER"}},create:{orderId:o.id,partyType:"EARNER",partyId:o.earnerId,amountPaisa:earner,status:settleStatus},update:{amountPaisa:earner,status:settleStatus}});
+   await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"PLATFORM"}},create:{orderId:o.id,partyType:"PLATFORM",amountPaisa:platform,status:settleStatus},update:{amountPaisa:platform,status:settleStatus}});
+   if(o.logistics)await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"TRANSPORTER"}},create:{orderId:o.id,partyType:"TRANSPORTER",amountPaisa:o.logistics.transporterCostPaisa,status:settleStatus},update:{amountPaisa:o.logistics.transporterCostPaisa,status:settleStatus}});
+   if(refund>0n&&o.payment)await tx.payment.update({where:{orderId:o.id},data:{status:"REFUND_PENDING",refundedPaisa:refund}});
+   await tx.orderEvent.create({data:{orderId:o.id,type:next,actorRole:"CUSTOMER",metadata:{verifiedQuantity:qty,returnedQuantity:returned,refundPaisa:refund.toString()}}});
    return tx.order.findUnique({where:{id:o.id},include:{reward:true,settlements:true}});
   });
   return json(res,200,result);
@@ -235,7 +236,7 @@ module.exports=async(req,res)=>{try{
   }
   if(["PICKED_UP","OUT_FOR_DELIVERY","DELIVERED","VERIFIED","PARTIALLY_DELIVERED"].includes(o.status))return json(res,409,{error:"After pickup this order must be reconciled, not cancelled"});
   if(!text(b.reason,3,300))return json(res,400,{error:"Cancellation reason is required"});
-  const x=await db.order.update({where:{id:o.id},data:{status:"CANCELLED",cancelledAt:new Date(),cancelReason:b.reason.trim()}});await db.orderEvent.create({data:{orderId:o.id,type:"CANCELLED",actorRole:session.role,actorId:session.sub,metadata:{reason:b.reason.trim()}}});return json(res,200,x);
+  const x=await db.$transaction(async tx=>{const z=await tx.order.update({where:{id:o.id},data:{status:"CANCELLED",cancelledAt:new Date(),cancelReason:b.reason.trim()}});const pay=await tx.payment.findUnique({where:{orderId:o.id}});if(pay?.status==="CONFIRMED")await tx.payment.update({where:{orderId:o.id},data:{status:"REFUND_PENDING",refundedPaisa:pay.amountPaisa}});await tx.orderEvent.create({data:{orderId:o.id,type:"CANCELLED",actorRole:session.role,actorId:session.sub,metadata:{reason:b.reason.trim()}}});return z});return json(res,200,x);
  }
 
  const payConfirm=p.match(/^\/orders\/([^/]+)\/confirm-payment$/);
@@ -255,6 +256,17 @@ module.exports=async(req,res)=>{try{
 
  const dispute=p.match(/^\/orders\/([^/]+)\/dispute$/);
  if(m==="POST"&&dispute){const b=await body(req);if(!text(b.reason,3,120))return json(res,400,{error:"Dispute reason required"});const o=await db.order.findUnique({where:{id:dispute[1]},include:{business:true}});if(!o)return json(res,404,{error:"Order not found"});if(session.role==="EARNER"&&o.earnerId!==session.sub||session.role==="BUSINESS"&&o.business.ownerId!==session.sub)return json(res,403,{error:"Forbidden"});const d=await db.dispute.create({data:{orderId:o.id,openedBy:session.role+":"+session.sub,reason:b.reason,details:b.details||null}});await db.order.update({where:{id:o.id},data:{status:"DISPUTED"}});return json(res,201,d)}
+
+ const ret=p.match(/^\/orders\/([^/]+)\/complete-return$/);
+ if(m==="POST"&&ret){requireRole(session,"ADMIN");const o=await db.order.findUnique({where:{id:ret[1]},include:{payment:true,logistics:true}});if(!o||!["PARTIALLY_DELIVERED","DELIVERY_FAILED","RETURN_IN_PROGRESS"].includes(o.status))return json(res,409,{error:"No return is pending"});const x=await db.$transaction(async tx=>{if(o.logistics)await tx.logisticsAssignment.update({where:{orderId:o.id},data:{status:"RETURNED",returnedAt:new Date()}});await tx.settlement.updateMany({where:{orderId:o.id,status:"HELD"},data:{status:"PAYABLE"}});await tx.orderEvent.create({data:{orderId:o.id,type:"RETURN_COMPLETED",actorRole:"ADMIN",actorId:session.sub}});return tx.order.update({where:{id:o.id},data:{status:o.deliveredQuantity>0?"PARTIALLY_DELIVERED":"RETURNED"}})});return json(res,200,x)}
+
+ const refund=p.match(/^\/orders\/([^/]+)\/mark-refunded$/);
+ if(m==="POST"&&refund){requireRole(session,"ADMIN");const pay=await db.payment.findUnique({where:{orderId:refund[1]}});if(!pay||pay.status!=="REFUND_PENDING")return json(res,409,{error:"No refund is pending"});const x=await db.payment.update({where:{orderId:refund[1]},data:{status:"REFUNDED"}});await db.orderEvent.create({data:{orderId:refund[1],type:"REFUND_COMPLETED",actorRole:"ADMIN",actorId:session.sub,metadata:{amountPaisa:pay.refundedPaisa.toString()}}});return json(res,200,x)}
+
+ const settle=p.match(/^\/settlements\/([^/]+)\/paid$/);
+ if(m==="POST"&&settle){requireRole(session,"ADMIN");const st=await db.settlement.findUnique({where:{id:settle[1]}});if(!st)return json(res,404,{error:"Settlement not found"});if(st.status!=="PAYABLE")return json(res,409,{error:"Settlement is not payable"});const x=await db.settlement.update({where:{id:st.id},data:{status:"PAID",paidAt:new Date()}});if(st.partyType==="EARNER"){const rw=await db.reward.findUnique({where:{orderId:st.orderId}});if(rw&&rw.status!=="PAID"){await db.reward.update({where:{id:rw.id},data:{status:"PAID"}});await db.ledgerEntry.create({data:{userId:rw.userId,kind:"PAYOUT",amountPaisa:-rw.amountPaisa,referenceType:"REWARD",referenceId:rw.id,idempotencyKey:"payout:reward:"+rw.id}})}}return json(res,200,x)}
+
+ if(m==="GET"&&p==="/admin/orders"){requireRole(session,"ADMIN");return json(res,200,await db.order.findMany({include:{campaign:{select:{title:true,unitLabel:true}},business:{select:{name:true}},payment:true,logistics:true,settlements:true,disputes:{where:{status:"OPEN"}}},orderBy:{createdAt:"desc"}}))}
 
  if(m==="GET"&&p==="/me/orders"){
   requireRole(session,"EARNER");
