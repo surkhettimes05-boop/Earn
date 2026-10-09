@@ -329,3 +329,20 @@ B4 is frontend-only: `index.html`, `public/client.js`, `public/strings.js`, and 
 
 ### B5 verification
 B5 branches from main after payment-instructions and B4 were merged. It intentionally does not include the open B4B frontend branch. Changes are frontend-only plus this plan; no `api/`, `prisma/`, or backend `lib/` logic changed. This environment could inspect/write/compare GitHub files but could not execute npm, Prisma, the private DB, or browser interactions. No post-B5 runtime pass is claimed.
+
+
+## Ranked next backend risks after B4B
+1. **Buyer delivery-PIN recovery** — add a token-authenticated “send me a new PIN” action only while the order is awaiting buyer delivery confirmation. It must generate a new PIN, replace the stored hash, invalidate the old PIN immediately, avoid logs/URLs, and return the new raw PIN only to the buyer.
+2. **Withdrawal requests** — add an earner withdrawal request/payout state machine so PAYABLE money can move through an explicit, auditable payout workflow.
+3. **Server-side ready/on-the-way earner summary** — return authoritative mutually exclusive money buckets from the backend instead of deriving them in the browser from ledger balance + order settlements.
+4. **Payment/progression deadline for held campaign slots** — CUSTOMER_CONFIRMED, ACCEPTED and PAYMENT_PENDING orders can still reserve campaign capacity indefinitely; add an expiry/escalation policy that safely releases or resolves those slots.
+
+These are ranked by trust/financial risk and are intentionally not implemented in B4B.
+
+## Stage B4B — payment instructions wiring
+- PAYMENT_PENDING now renders the server-provided payment destination contract. Values are inserted with DOM `textContent`, never interpreted as HTML.
+- QR images render only when the configured URL parses successfully and uses HTTPS. The image also uses a no-referrer policy.
+- The exact server-provided reference format is displayed and has a Copy reference action.
+- If `paymentInstructions` is absent, the existing warning remains: the buyer is told not to send money until EARN provides verified details.
+- Buyer confirmation now visibly shows the one-time delivery PIN returned by the API and tells the buyer to save it before leaving and keep it private from the earner, business and delivery person.
+- B4B changes only frontend files plus this plan. No `api/`, `prisma/`, or backend `lib/` logic changed.
