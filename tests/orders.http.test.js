@@ -11,6 +11,9 @@ if (!process.env.TEST_DATABASE_URL || process.env.DATABASE_URL !== process.env.T
 const db = new PrismaClient();
 global.__earnDb = db;
 const handler = require("../api/index");
+process.env.CRON_SECRET = "integration-cron-secret-" + Date.now();
+const cronHandler = require("../api/cron/expire-orders");
+const { expireStaleSubmittedOrders } = require("../lib/order-expiry");
 
 const runId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const ids = { users: [], businesses: [], campaigns: [], attributions: [], orders: [] };
@@ -54,6 +57,8 @@ async function createRewardAtCap(f) {
 test.after(async()=>{
   if(ids.campaigns.length) await db.orderEvent.deleteMany({where:{order:{campaignId:{in:ids.campaigns}}}});
   if(ids.campaigns.length) await db.reward.deleteMany({where:{order:{campaignId:{in:ids.campaigns}}}});
+  if(ids.campaigns.length) await db.dispute.deleteMany({where:{order:{campaignId:{in:ids.campaigns}}}});
+  if(ids.campaigns.length) await db.payment.deleteMany({where:{order:{campaignId:{in:ids.campaigns}}}});
   if(ids.campaigns.length) await db.order.deleteMany({where:{campaignId:{in:ids.campaigns}}});
   if(ids.attributions.length) await db.attribution.deleteMany({where:{id:{in:ids.attributions}}});
   if(ids.campaigns.length) await db.campaign.deleteMany({where:{id:{in:ids.campaigns}}});
@@ -158,4 +163,34 @@ test("buyer rejection with submitted payment reference opens dispute and refund 
   assert.equal(payment.status,"REFUND_PENDING"); assert.equal(payment.refundedPaisa,440000n);
   assert.equal(await db.dispute.count({where:{orderId:created.body.id,status:"OPEN"}}),1);
   assert.equal(await db.orderEvent.count({where:{orderId:created.body.id,type:"CUSTOMER_REJECTED_ORDER"}}),1);
+});
+
+test("real DB expiry cancels only SUBMITTED orders older than 24 hours and records ORDER_EXPIRED", async()=>{
+  const f=await fixture({cap:2,earnerNumber:21});
+  const old=await db.order.create({data:{campaignId:f.campaign.id,businessId:f.business.id,earnerId:f.earner.id,attributionCode:f.attribution.code,customerName:"Old buyer",customerPhoneHash:"old-"+runId,product:"Rice",quantity:1,idempotencyKey:"old-"+runId,createdAt:new Date(Date.now()-25*60*60*1000)}});
+  const fresh=await db.order.create({data:{campaignId:f.campaign.id,businessId:f.business.id,earnerId:f.earner.id,attributionCode:f.attribution.code,customerName:"Fresh buyer",customerPhoneHash:"fresh-"+runId,product:"Rice",quantity:1,idempotencyKey:"fresh-"+runId,createdAt:new Date(Date.now()-23*60*60*1000)}});
+  ids.orders.push(old.id,fresh.id);
+  const result=await expireStaleSubmittedOrders(db,{now:new Date(),hours:24});
+  assert.ok(result.expired>=1);
+  assert.equal((await db.order.findUnique({where:{id:old.id}})).status,"CANCELLED");
+  assert.equal((await db.order.findUnique({where:{id:fresh.id}})).status,"SUBMITTED");
+  assert.equal(await db.orderEvent.count({where:{orderId:old.id,type:"ORDER_EXPIRED"}}),1);
+});
+
+test("cron GET rejects missing and wrong secrets", async()=>{
+  for(const authorization of [undefined,"Bearer wrong-secret"]){
+    const req=Readable.from([]); req.method="GET"; req.url="/api/cron/expire-orders"; req.headers={};
+    if(authorization)req.headers.authorization=authorization;
+    const res=response(); await cronHandler(req,res); assert.equal(res.statusCode,401);
+  }
+});
+
+test("cron GET with CRON_SECRET returns expired count", async()=>{
+  const f=await fixture({earnerNumber:22});
+  const old=await db.order.create({data:{campaignId:f.campaign.id,businessId:f.business.id,earnerId:f.earner.id,attributionCode:f.attribution.code,customerName:"Cron buyer",customerPhoneHash:"cron-"+runId,product:"Rice",quantity:1,idempotencyKey:"cron-"+runId,createdAt:new Date(Date.now()-25*60*60*1000)}});
+  ids.orders.push(old.id);
+  const req=Readable.from([]); req.method="GET"; req.url="/api/cron/expire-orders"; req.headers={authorization:"Bearer "+process.env.CRON_SECRET};
+  const res=response(); await cronHandler(req,res);
+  assert.equal(res.statusCode,200); assert.equal(typeof res.body.expired,"number"); assert.ok(res.body.expired>=1);
+  assert.equal((await db.order.findUnique({where:{id:old.id}})).status,"CANCELLED");
 });
