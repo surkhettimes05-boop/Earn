@@ -23,6 +23,8 @@ window.EARN_API = (() => {
     reissueBuyerLink:orderId=>request("/orders/"+encodeURIComponent(orderId)+"/reissue-confirmation",{method:"POST",body:"{}"}),
     myOrders:()=>request("/me/orders"),
     myEarnings:()=>request("/me/earnings"),
+    businessOrders:()=>request("/business/orders"),
+    openDispute:(orderId,reason,details)=>request("/orders/"+encodeURIComponent(orderId)+"/dispute",{method:"POST",body:JSON.stringify({reason,details})}),
     buyerOrder:token=>request("/customer/order?token="+encodeURIComponent(token)),
     confirmBuyerOrder:token=>request("/customer/confirm-order",{method:"POST",body:JSON.stringify({token})}),
     rejectBuyerOrder:token=>request("/customer/reject-order",{method:"POST",body:JSON.stringify({token})}),
