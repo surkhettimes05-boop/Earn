@@ -45,5 +45,9 @@ window.EARN_STRINGS = {
   somethingWrong:"Something wrong?", reportProblem:"Report a problem", problemReason:"What went wrong?", problemNote:"Add a note (optional)", submitProblem:"Send for review", sendingProblem:"Sending…",
   problemSent:"EARN is reviewing this problem.", problemOpen:"Under review", problemResolved:"Resolved",
   reasonWrongQuantity:"Wrong quantity", reasonDelivery:"Delivery problem", reasonPayment:"Payment problem", reasonProduct:"Product problem", reasonOther:"Something else",
-  selectOrder:"Choose an order to see its progress.", noBusinessOrders:"No orders yet.", currentStep:"Current", completedStep:"Done", upcomingStep:"Next"
+  selectOrder:"Choose an order to see its progress.", noBusinessOrders:"No orders yet.", currentStep:"Current", completedStep:"Done", upcomingStep:"Next",
+  newCampaign:"New campaign", productName:"Product name", pricePerUnit:"Price per unit", commissionPerUnit:"Commission per unit", earnerShare:"Earner share", publishCampaign:"Publish campaign", publishingCampaign:"Publishing…",
+  earnerGets:"Earner gets", earnGets:"EARN gets", live:"Live", draft:"Draft", paused:"Paused", closed:"Closed", noCampaigns:"No campaigns yet. Create your first product campaign.",
+  incomingOrders:"Incoming orders", accept:"Accept", decline:"Decline", readyPickup:"Ready for pickup", markingReady:"Updating…", accepting:"Accepting…", declining:"Declining…", declineReason:"Why are you declining this order?", declineDefault:"Business cannot fulfill this order",
+  businessMoneySoon:"Coming soon — business settlements and payouts are not available in the app yet.", campaignPublished:"Campaign published and ready for earners."
 };

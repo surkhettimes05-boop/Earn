@@ -306,3 +306,26 @@ B4 is frontend-only: `index.html`, `public/client.js`, `public/strings.js`, and 
 
 ## CI bootstrap
 - [ ] Generate and commit a genuine `package-lock.json` using npm in a trusted Codespace/local environment, then change GitHub Actions back from temporary `npm install` to deterministic `npm ci` and restore npm dependency caching.
+
+
+## Stage B5 — Business campaigns + orders
+
+### Implemented
+- Business Campaigns uses the real `GET /api/business/campaigns`, `POST /api/campaigns`, and publish endpoint.
+- The main creation flow has only the requested four decisions: product name, unit price, commission per unit, and 60/70/80% earner-share chips. Lead/content/referral and the three-way commission selector are not exposed.
+- The split preview uses integer paisa and the same half-up formula as backend `commissionQuote`: `(commissionPaisa * earnerShareBps + 5000) / 10000`, with EARN receiving the exact remainder. The server `lib/domain.js` function is CommonJS/backend code and is not browser-importable in the current static frontend, so B5 reproduces that exact formula rather than creating a browser dependency on backend code.
+- Campaign creation uses ORDER + PER_UNIT and immediately publishes the created draft through the real publish endpoint.
+- Business Orders uses the real business order list. CUSTOMER_CONFIRMED orders can Accept the full requested quantity or Decline with a reason. PAID orders can be marked Ready for pickup. Every order can open the B4 tracker. Earner commission is not shown in the business view.
+- Business Money remains an explicit Coming soon state because there is no business settlement/money endpoint suitable for this tab.
+
+### B5 backend gaps
+1. Campaign has no separate product-name field. B5 uses `title` as the product name.
+2. The create-campaign API still requires `city`, `successRule`, `cap`, and `unitLabel`, although the requested main business flow has only four inputs. B5 must currently submit internal defaults (`city= Nepal`, delivered-quantity success rule, `cap=100`, `unitLabel=unit`). This should become a server-side product-campaign preset/default contract; **cap in particular should not remain a hidden product decision long term**.
+3. Accept supports a reduced accepted quantity in the API, but the B5 simplified action accepts the full requested quantity. A partial-accept UX is not part of this stage.
+4. Decline maps to the existing authenticated order cancellation endpoint because there is no separate decline command/status.
+5. Business Money has no dedicated business settlement/ledger endpoint.
+6. The frontend cannot import the existing CommonJS `lib/domain.js` economics function directly. If shared economics logic grows, extract a browser/server-compatible pure module rather than maintaining duplicate formulas.
+7. B4 tracker limitations remain: current status is used to infer milestones because there is no role-scoped event-history/detail endpoint.
+
+### B5 verification
+B5 branches from main after payment-instructions and B4 were merged. It intentionally does not include the open B4B frontend branch. Changes are frontend-only plus this plan; no `api/`, `prisma/`, or backend `lib/` logic changed. This environment could inspect/write/compare GitHub files but could not execute npm, Prisma, the private DB, or browser interactions. No post-B5 runtime pass is claimed.
