@@ -80,8 +80,21 @@ module.exports=async(req,res)=>{try{
    await tx.$queryRawUnsafe('SELECT id FROM "Campaign" WHERE id = $1 FOR UPDATE',o.campaignId);
    const current=await tx.order.findUnique({where:{id:o.id}});
    if(!current||!["SUBMITTED","CUSTOMER_CONFIRMED","ACCEPTED","PAYMENT_PENDING"].includes(current.status))throw Object.assign(new Error("This order can no longer be rejected"),{status:409});
+   if(current.status==="PAYMENT_PENDING"){
+    const payment=await tx.payment.findUnique({where:{orderId:o.id}});
+    // PAYMENT_PENDING means EARN has created the amount due and is waiting for
+    // manual payment proof/admin confirmation. If proof was submitted, money may
+    // already have left the buyer, so route the rejection through dispute/refund.
+    if(payment&&payment.status==="SUBMITTED"){
+     await tx.payment.update({where:{orderId:o.id},data:{status:"REFUND_PENDING",refundedPaisa:payment.amountPaisa}});
+     await tx.dispute.create({data:{orderId:o.id,openedBy:"CUSTOMER",reason:"Buyer says they did not place this order",details:"Payment reference was already submitted; refund review required."}});
+     const z=await tx.order.update({where:{id:o.id},data:{status:"DISPUTED"}});
+     await tx.orderEvent.create({data:{orderId:o.id,type:"CUSTOMER_REJECTED_ORDER",actorRole:"CUSTOMER",metadata:{refundRequired:true}}});
+     return z;
+    }
+   }
    const z=await tx.order.update({where:{id:o.id},data:{status:"CANCELLED",cancelledAt:new Date(),cancelReason:"Buyer says they did not place this order"}});
-   await tx.orderEvent.create({data:{orderId:o.id,type:"CUSTOMER_REJECTED_ORDER",actorRole:"CUSTOMER"}});
+   await tx.orderEvent.create({data:{orderId:o.id,type:"CUSTOMER_REJECTED_ORDER",actorRole:"CUSTOMER",metadata:{refundRequired:false}}});
    return z;
   });
   return json(res,200,{id:x.id,status:x.status});
