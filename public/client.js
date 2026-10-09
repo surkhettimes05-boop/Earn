@@ -22,6 +22,11 @@ window.EARN_API = (() => {
     createOrder:data=>request("/orders",{method:"POST",body:JSON.stringify(data)}),
     reissueBuyerLink:orderId=>request("/orders/"+encodeURIComponent(orderId)+"/reissue-confirmation",{method:"POST",body:"{}"}),
     myOrders:()=>request("/me/orders"),
-    myEarnings:()=>request("/me/earnings")
+    myEarnings:()=>request("/me/earnings"),
+    buyerOrder:token=>request("/customer/order?token="+encodeURIComponent(token)),
+    confirmBuyerOrder:token=>request("/customer/confirm-order",{method:"POST",body:JSON.stringify({token})}),
+    rejectBuyerOrder:token=>request("/customer/reject-order",{method:"POST",body:JSON.stringify({token})}),
+    submitBuyerPayment:(token,method,reference)=>request("/customer/payment",{method:"POST",body:JSON.stringify({token,method,reference})}),
+    verifyBuyerDelivery:(token,quantity,deliveryPin)=>request("/customer/verify-delivery",{method:"POST",body:JSON.stringify({token,quantity,deliveryPin})})
   };
 })();
