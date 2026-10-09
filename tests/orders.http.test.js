@@ -145,3 +145,17 @@ test("buyer cannot reject after payment is confirmed", async()=>{
   const rejected=await request("POST","/api/customer/reject-order",null,{token:buyerToken});
   assert.equal(rejected.statusCode,409);
 });
+
+test("buyer rejection with submitted payment reference opens dispute and refund path", async()=>{
+  const f=await fixture({earnerNumber:20}), created=await request("POST","/api/orders",f.token,orderBody(f,"20"));
+  ids.orders.push(created.body.id);
+  const buyerToken=new URL(created.body.customerConfirmationPath,"http://x").searchParams.get("token");
+  await db.order.update({where:{id:created.body.id},data:{status:"PAYMENT_PENDING"}});
+  await db.payment.create({data:{orderId:created.body.id,amountPaisa:440000n,method:"BANK",reference:"REF-"+runId,status:"SUBMITTED",submittedAt:new Date()}});
+  const rejected=await request("POST","/api/customer/reject-order",null,{token:buyerToken});
+  assert.equal(rejected.statusCode,200); assert.equal(rejected.body.status,"DISPUTED");
+  const payment=await db.payment.findUnique({where:{orderId:created.body.id}});
+  assert.equal(payment.status,"REFUND_PENDING"); assert.equal(payment.refundedPaisa,440000n);
+  assert.equal(await db.dispute.count({where:{orderId:created.body.id,status:"OPEN"}}),1);
+  assert.equal(await db.orderEvent.count({where:{orderId:created.body.id,type:"CUSTOMER_REJECTED_ORDER"}}),1);
+});
