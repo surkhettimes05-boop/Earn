@@ -199,3 +199,83 @@ The user confirmed `npm test` and `npm run test:integration` passed on main imme
 PR #3/B1 was locally checked by the user before its squash merge. B2 changes are frontend-only: `index.html`, `public/client.js`, `public/strings.js`, and this plan. No `api/`, `prisma/`, or backend `lib/` logic was changed.
 
 This environment could inspect, compare, and write GitHub repository files, but it could not execute the browser flow, npm, Prisma, or the private database. No post-B2 runtime pass is claimed. Run the existing domain/integration suites and the manual B2 flow in the B2 PR before merge.
+
+
+## Stage B3 — public buyer page
+
+### Implemented
+- `/confirm-order?token=...` is a public buyer experience. It does not require an EARN account; the existing high-entropy buyer token is the credential.
+- SUBMITTED shows business, goods, quantity, unit price and goods total with “Yes, I placed this order” and “I did not place this order”.
+- Confirmation uses the real customer-confirm endpoint. Rejection uses the real customer-reject endpoint.
+- PAYMENT_PENDING shows goods, EARN delivery fee, total amount due, the required EARN payment trust copy, manual method/reference form, and the real customer-payment endpoint.
+- If Payment is already SUBMITTED, the page explains that rejecting now opens refund review rather than silently cancelling. The API's DISPUTED response is shown as a refund-review state.
+- DELIVERED asks for actual quantity received, defaults to ordered quantity, requires the six-digit delivery PIN, and calls the real delivery-verification endpoint. PARTIALLY_DELIVERED is explained without internal terminology.
+- Other order states have plain status views. Invalid, expired, or replaced buyer tokens get a friendly message.
+- Buyer pages do not render internal order IDs, phone hashes, token hashes, seller IDs, or other customers' data.
+
+### B3 backend gaps
+1. The buyer order response does not provide EARN bank/QR/payment-destination instructions. B3 therefore shows a conspicuous placeholder telling the buyer **not to send money until EARN provides verified payment details**. This must be replaced by a server-controlled payment-instructions contract before real manual payments.
+2. The backend returns a delivery PIN only once, in the response to buyer confirmation, while the buyer order GET deliberately does not return it. B3 tells the buyer to retain/use that six-digit PIN. There is no secure PIN recovery endpoint if the buyer loses it.
+3. The requested wording says money is “held safely”. The current backend records manual payment references and ADMIN confirmation but does not integrate a regulated escrow/payment provider. This wording describes the intended operating process, not a technical/legal escrow guarantee; payment/legal review remains required before production claims are finalized.
+4. There is no explicit `EXPIRED` OrderStatus. The 24-hour expiry changes stale SUBMITTED orders to CANCELLED with an internal cancellation reason, but the public buyer GET does not expose that reason. B3 therefore cannot distinguish “expired” from other cancellations through the current API.
+5. Customer-token endpoints still have no rate limiting.
+6. Buyer order GET exposes payment status/method but intentionally not the submitted payment reference. B3 can show that proof was submitted without echoing sensitive reference data.
+7. Admin operations required for the full buyer lifecycle (payment confirmation, logistics assignment, pickup/delivery) still have no UI; B7 remains the admin stage.
+
+### Local-only B3 end-to-end setup
+Use a local/dev database only. Never run these lifecycle commands against production merely to test UI. Obtain an ADMIN bearer token from a local ADMIN account and use the order ID created in the local Earner flow.
+
+After the buyer confirms the order, the business must first accept it with its BUSINESS token:
+```bash
+curl -X POST http://localhost:3000/api/orders/ORDER_ID/accept \
+  -H "Authorization: Bearer BUSINESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"quantity":1}'
+```
+
+Then ADMIN assigns logistics, which creates the payment amount and moves the order to PAYMENT_PENDING:
+```bash
+curl -X POST http://localhost:3000/api/orders/ORDER_ID/assign-logistics \
+  -H "Authorization: Bearer ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"transporterName":"Local test rider","transporterPhone":"9800000000","quotedFeeNpr":100,"transporterCostNpr":80}'
+```
+Save the returned `pickupCode` locally. Do not commit it.
+
+Use the buyer page to submit a manual payment reference. ADMIN then confirms it:
+```bash
+curl -X POST http://localhost:3000/api/orders/ORDER_ID/confirm-payment \
+  -H "Authorization: Bearer ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Business marks the paid order ready:
+```bash
+curl -X POST http://localhost:3000/api/orders/ORDER_ID/ready \
+  -H "Authorization: Bearer BUSINESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+ADMIN records pickup using the saved pickup code and the accepted quantity:
+```bash
+curl -X POST http://localhost:3000/api/orders/ORDER_ID/pickup \
+  -H "Authorization: Bearer ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"pickupCode":"PICKUP_CODE","quantity":1}'
+```
+
+Optionally mark it out for delivery, then delivered:
+```bash
+curl -X POST http://localhost:3000/api/orders/ORDER_ID/out-for-delivery \
+  -H "Authorization: Bearer ADMIN_TOKEN" -H "Content-Type: application/json" -d '{}'
+
+curl -X POST http://localhost:3000/api/orders/ORDER_ID/delivered \
+  -H "Authorization: Bearer ADMIN_TOKEN" -H "Content-Type: application/json" -d '{}'
+```
+
+Finally reload the buyer link and submit the actual received quantity plus the six-digit delivery PIN returned when the buyer originally confirmed the order. Test both full quantity and, on a separate order, a smaller quantity.
+
+### B3 verification
+B2 was checked locally/preview by the user before squash merge. B3 is frontend-only: `index.html`, `public/client.js`, `public/strings.js`, and this plan. No `api/`, `prisma/`, or backend `lib/` logic changed. This environment could inspect/write/compare GitHub files but could not execute npm, Prisma, the private database, browser payment flow, or local curl lifecycle. No post-B3 runtime pass is claimed.
