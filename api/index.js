@@ -13,6 +13,7 @@ const cleanPhone=p=>String(p||"").replace(/\D/g,"");
 const validPhone=p=>/^9779[678]\d{8}$/.test(p)||/^9[678]\d{8}$/.test(p);
 const hashPhone=p=>crypto.createHash("sha256").update(cleanPhone(p)).digest("hex");
 const text=(v,min,max)=>typeof v==="string"&&v.trim().length>=min&&v.trim().length<=max;
+const hashSecret=v=>crypto.createHash("sha256").update(String(v)).digest("hex");
 const publicUser=u=>({id:u.id,phone:u.phone,role:u.role,displayName:u.earner?.displayName||null,business:u.business?{id:u.business.id,name:u.business.name,verified:u.business.verified}:null});
 
 module.exports=async(req,res)=>{try{
@@ -115,10 +116,21 @@ module.exports=async(req,res)=>{try{
   if(duplicate)return json(res,409,{error:"This customer already has an active or completed order for this opportunity"});
   const delivered=await db.reward.count({where:{order:{campaignId:c.id},status:{in:["EARNED","PAYABLE","PAID"]}}});
   if(delivered>=c.cap)return json(res,409,{error:"Campaign reward cap reached"});
-  const o=await db.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,product:b.product.trim(),quantity:Number(b.quantity),idempotencyKey:b.idempotencyKey}});
-  return json(res,201,o);
+  const confirmToken=crypto.randomBytes(24).toString("hex");
+  const o=await db.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity:Number(b.quantity),idempotencyKey:b.idempotencyKey}});
+  return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
  }
 
+ if(m==="POST"&&p==="/customer/confirm-order"){
+  const b=await body(req);
+  if(!text(b.token,20,200))return json(res,400,{error:"Invalid confirmation token"});
+  const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(b.token)},include:{campaign:{select:{title:true}},business:{select:{name:true}}}});
+  if(!o)return json(res,404,{error:"Order confirmation not found"});
+  if(o.status==="CUSTOMER_CONFIRMED")return json(res,200,{id:o.id,status:o.status});
+  if(o.status!=="SUBMITTED")return json(res,409,{error:"Order can no longer be confirmed"});
+  await db.order.update({where:{id:o.id},data:{status:"CUSTOMER_CONFIRMED",customerConfirmedAt:new Date()}});
+  return json(res,200,{id:o.id,status:"CUSTOMER_CONFIRMED"});
+ }
  const tr=p.match(/^\/orders\/([^/]+)\/(accept|deliver|cancel)$/);
  if(m==="POST"&&tr){
   requireRole(session,"BUSINESS","ADMIN");
@@ -128,13 +140,23 @@ module.exports=async(req,res)=>{try{
    if(!o)throw Object.assign(new Error("Order not found"),{status:404});
    if(session.role!=="ADMIN"&&o.business.ownerId!==session.sub)throw Object.assign(new Error("Forbidden"),{status:403});
    if(o.status===desired)return o;
-   assertTransition(o.status,desired);
+   if(desired==="ACCEPTED"){
+    if(o.status!=="CUSTOMER_CONFIRMED")throw Object.assign(new Error("Customer must confirm the order first"),{status:409});
+    const pin=String(crypto.randomInt(100000,1000000));
+    const updated=await tx.order.update({where:{id:o.id},data:{status:"ACCEPTED",deliveryPinHash:hashSecret(pin)}});
+    return {...updated,deliveryPin:pin};
+   }
+   if(desired==="DELIVERED"){
+    if(o.status!=="ACCEPTED")throw Object.assign(new Error("Order must be accepted first"),{status:409});
+    const b=await body(req);
+    if(!/^\d{6}$/.test(String(b.deliveryPin||""))||hashSecret(b.deliveryPin)!==o.deliveryPinHash)throw Object.assign(new Error("Correct customer delivery PIN required"),{status:409});
+   } else assertTransition(o.status,desired);
    if(desired!=="DELIVERED")return tx.order.update({where:{id:o.id},data:{status:desired}});
    const spec=rewardForDelivery(o,o.campaign);
    await tx.$queryRawUnsafe('SELECT "id" FROM "Campaign" WHERE "id" = $1 FOR UPDATE',o.campaignId);
    const count=await tx.reward.count({where:{order:{campaignId:o.campaignId},status:{in:["EARNED","PAYABLE","PAID"]}}});
    if(count>=o.campaign.cap)throw Object.assign(new Error("Campaign reward cap reached"),{status:409});
-   await tx.order.update({where:{id:o.id},data:{status:"DELIVERED"}});
+   await tx.order.update({where:{id:o.id},data:{status:"DELIVERED",deliveryVerifiedAt:new Date()}});
    await tx.reward.create({data:{orderId:o.id,userId:o.earnerId,amountPaisa:spec.amountPaisa,status:"EARNED"}});
    await tx.ledgerEntry.create({data:{userId:o.earnerId,kind:"REWARD_EARNED",amountPaisa:spec.amountPaisa,referenceType:"ORDER",referenceId:o.id,idempotencyKey:spec.ledgerKey}});
    return tx.order.findUnique({where:{id:o.id},include:{reward:true}});
