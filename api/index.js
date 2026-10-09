@@ -188,7 +188,7 @@ module.exports=async(req,res)=>{try{
   requireRole(session,"EARNER"); const b=await body(req);
   if(!b.idempotencyKey)return json(res,400,{error:"idempotencyKey required"});
   if(!text(b.customerName,2,80)||!validPhone(cleanPhone(b.customerPhone))||!text(b.product,2,120)||!Number.isInteger(Number(b.quantity))||Number(b.quantity)<1)return json(res,400,{error:"Enter valid order details"});
-  const existing=await db.order.findUnique({where:{idempotencyKey:b.idempotencyKey}}); if(existing)return json(res,200,existing);
+  const existing=await db.order.findUnique({where:{idempotencyKey:b.idempotencyKey}}); if(existing){if(existing.earnerId!==session.sub)return json(res,409,{error:"Idempotency key conflict"});return json(res,200,existing)}
   const a=await db.attribution.findUnique({where:{code:b.attributionCode}}); if(!a||a.earnerId!==session.sub)return json(res,400,{error:"Invalid attribution"});
   const c=await db.campaign.findFirst({where:{id:a.campaignId,status:"LIVE",type:"ORDER"}}); if(!c)return json(res,409,{error:"Order campaign unavailable"});
   const phoneHash=hashPhone(b.customerPhone),quantity=Number(b.quantity),quote=commissionQuote(c,quantity),subtotal=BigInt(c.unitPricePaisa||0)*BigInt(quantity);
