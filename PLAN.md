@@ -171,3 +171,31 @@ The JWT returned by the existing API is stored in browser `sessionStorage` under
 
 ### B1 verification
 The user confirmed `npm test` and `npm run test:integration` passed on main immediately before B1. B1 does not modify `api/`, `prisma/`, or backend logic in `lib/`. This environment could inspect and write GitHub files but could not execute the browser flow, npm tests, Prisma, or the private database. Before merging B1, run both existing test commands and manually verify Earner and Business signup/login/logout using the steps in PR #3.
+
+
+## Stage B2 — Earner Home + Sell
+
+### Implemented
+- Earner Home now loads the real live campaign list, `GET /api/me/orders`, and `GET /api/me/earnings`.
+- Money cards avoid a prominent zero state when the earner has no ledger activity. “Ready for payout” is the sum of the earner's PAYABLE order settlements; “On the way” is the remaining unpaid ledger balance. Withdraw is visibly disabled and explains that withdrawal requests are not built yet.
+- “Sell and earn” shows only live ORDER + PER_UNIT campaigns so the UI can truthfully state “You earn Rs X per unit”. The amount is derived from the campaign's business commission per unit and earner share.
+- “Your orders” uses real earner orders and plain-language status chips.
+- Sell uses the real `POST /api/campaigns/:id/start` and `POST /api/orders` flow. Buyer name, Nepal phone, quantity stepper and live earnings preview are sent to the existing API.
+- A UUID idempotency key is generated once when the user first submits an attempt and retained across a failed retry. Editing buyer fields or quantity starts a new attempt/key. A successful creation clears the key.
+- The returned `customerConfirmationPath` is resolved against the current site origin. The UI can copy it or open WhatsApp with a prefilled buyer-confirmation message. No SMS is claimed or sent.
+- SUBMITTED orders expose “Get buyer link again”. After an explicit warning/confirmation it calls `POST /api/orders/:id/reissue-confirmation`; the new link is shown and the UI warns that reissuing invalidates the old link.
+- API errors are surfaced. Campaign-cap and duplicate-buyer errors are translated into plain customer-facing words; fetch/network failure has a specific retry message.
+
+### B2 backend gaps
+1. There is no withdrawal-request endpoint. Withdraw remains disabled; existing admin settlement reconciliation is the real payout path.
+2. `GET /api/me/earnings` exposes the ledger balance but does not split “ready” versus “on the way”. B2 combines that ledger balance with the earner's PAYABLE settlements from `GET /api/me/orders`. A dedicated earner money summary endpoint would make this contract explicit.
+3. Campaigns have a title but no separate customer-facing product-name field. B2 uses the campaign title as the product name when creating the order.
+4. The campaign API supports commission structures that cannot honestly be described as a fixed “Rs X per unit”. B2 therefore lists only live ORDER + PER_UNIT campaigns in the primary selling UI.
+5. Idempotent `POST /api/orders` retries intentionally cannot reproduce the original raw buyer token because only its hash is stored. If a successful response was lost, the UI directs the earner to Orders → “Get buyer link again”.
+6. Clipboard access can be restricted by browser/security context. WhatsApp sharing remains available, and the link itself is visibly selectable.
+7. Existing auth/session, customer-token rate-limit, and long-running order deadline gaps from B1 remain open.
+
+### B2 verification
+PR #3/B1 was locally checked by the user before its squash merge. B2 changes are frontend-only: `index.html`, `public/client.js`, `public/strings.js`, and this plan. No `api/`, `prisma/`, or backend `lib/` logic was changed.
+
+This environment could inspect, compare, and write GitHub repository files, but it could not execute the browser flow, npm, Prisma, or the private database. No post-B2 runtime pass is claimed. Run the existing domain/integration suites and the manual B2 flow in the B2 PR before merge.
