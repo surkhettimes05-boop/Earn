@@ -70,6 +70,35 @@ module.exports=async(req,res)=>{try{
   await db.orderEvent.create({data:{orderId:o.id,type:"CUSTOMER_CONFIRMED",actorRole:"CUSTOMER"}});
   return json(res,200,{id:x.id,status:x.status,deliveryPin:pin});
  }
+ if(m==="POST"&&p==="/customer/reject-order"){
+  const b=await body(req),t=String(b.token||"");
+  if(!text(t,20,200))return json(res,400,{error:"Invalid order token"});
+  const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(t)}});
+  if(!o)return json(res,404,{error:"Order not found"});
+  if(!["SUBMITTED","CUSTOMER_CONFIRMED","ACCEPTED","PAYMENT_PENDING"].includes(o.status))return json(res,409,{error:"This order can no longer be rejected"});
+  const x=await db.$transaction(async tx=>{
+   await tx.$queryRawUnsafe('SELECT id FROM "Campaign" WHERE id = $1 FOR UPDATE',o.campaignId);
+   const current=await tx.order.findUnique({where:{id:o.id}});
+   if(!current||!["SUBMITTED","CUSTOMER_CONFIRMED","ACCEPTED","PAYMENT_PENDING"].includes(current.status))throw Object.assign(new Error("This order can no longer be rejected"),{status:409});
+   if(current.status==="PAYMENT_PENDING"){
+    const payment=await tx.payment.findUnique({where:{orderId:o.id}});
+    // PAYMENT_PENDING means EARN has created the amount due and is waiting for
+    // manual payment proof/admin confirmation. If proof was submitted, money may
+    // already have left the buyer, so route the rejection through dispute/refund.
+    if(payment&&payment.status==="SUBMITTED"){
+     await tx.payment.update({where:{orderId:o.id},data:{status:"REFUND_PENDING",refundedPaisa:payment.amountPaisa}});
+     await tx.dispute.create({data:{orderId:o.id,openedBy:"CUSTOMER",reason:"Buyer says they did not place this order",details:"Payment reference was already submitted; refund review required."}});
+     const z=await tx.order.update({where:{id:o.id},data:{status:"DISPUTED"}});
+     await tx.orderEvent.create({data:{orderId:o.id,type:"CUSTOMER_REJECTED_ORDER",actorRole:"CUSTOMER",metadata:{refundRequired:true}}});
+     return z;
+    }
+   }
+   const z=await tx.order.update({where:{id:o.id},data:{status:"CANCELLED",cancelledAt:new Date(),cancelReason:"Buyer says they did not place this order"}});
+   await tx.orderEvent.create({data:{orderId:o.id,type:"CUSTOMER_REJECTED_ORDER",actorRole:"CUSTOMER",metadata:{refundRequired:false}}});
+   return z;
+  });
+  return json(res,200,{id:x.id,status:x.status});
+ }
  if(m==="POST"&&p==="/customer/payment"){
   const b=await body(req),t=String(b.token||"");
   if(!text(t,20,200)||!text(b.reference,3,120)||!text(b.method,2,40))return json(res,400,{error:"Payment method and reference are required"});
@@ -188,15 +217,48 @@ module.exports=async(req,res)=>{try{
   requireRole(session,"EARNER"); const b=await body(req);
   if(!b.idempotencyKey)return json(res,400,{error:"idempotencyKey required"});
   if(!text(b.customerName,2,80)||!validPhone(cleanPhone(b.customerPhone))||!text(b.product,2,120)||!Number.isInteger(Number(b.quantity))||Number(b.quantity)<1)return json(res,400,{error:"Enter valid order details"});
-  const existing=await db.order.findUnique({where:{idempotencyKey:b.idempotencyKey}}); if(existing)return json(res,200,existing);
+  const existing=await db.order.findUnique({where:{idempotencyKey:b.idempotencyKey}}); if(existing){if(existing.earnerId!==session.sub)return json(res,409,{error:"Idempotency key conflict"});return json(res,200,existing)}
   const a=await db.attribution.findUnique({where:{code:b.attributionCode}}); if(!a||a.earnerId!==session.sub)return json(res,400,{error:"Invalid attribution"});
   const c=await db.campaign.findFirst({where:{id:a.campaignId,status:"LIVE",type:"ORDER"}}); if(!c)return json(res,409,{error:"Order campaign unavailable"});
   const phoneHash=hashPhone(b.customerPhone),quantity=Number(b.quantity),quote=commissionQuote(c,quantity),subtotal=BigInt(c.unitPricePaisa||0)*BigInt(quantity);
-  const duplicate=await db.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{notIn:["CANCELLED","RETURNED"]}}}); if(duplicate)return json(res,409,{error:"This customer already has an active or completed order"});
   const confirmToken=crypto.randomBytes(24).toString("hex");
-  const o=await db.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
-  await db.orderEvent.create({data:{orderId:o.id,type:"ORDER_SUBMITTED",actorRole:"EARNER",actorId:session.sub}});
-  return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
+  try {
+   const o=await db.$transaction(async tx=>{
+    // Lock this campaign row so cap checks and inserts for the same campaign serialize.
+    await tx.$queryRawUnsafe('SELECT id FROM "Campaign" WHERE id = $1 FOR UPDATE',c.id);
+    const duplicate=await tx.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{notIn:["CANCELLED","RETURNED"]}}});
+    if(duplicate){const err=new Error("DUPLICATE_BUYER");err.code="DUPLICATE_BUYER";throw err}
+    // The removed handler counted EARNED/PAYABLE/PAID rewards against the cap.
+    // Reserve capacity earlier as well: every non-cancelled/non-returned order consumes
+    // one slot. Without this reservation, two new orders could both pass a reward-only
+    // count before either has reached reward creation.
+    const reserved=await tx.order.count({where:{campaignId:c.id,status:{notIn:["CANCELLED","RETURNED"]}}});
+    if(reserved>=c.cap){const err=new Error("CAMPAIGN_CAP");err.code="CAMPAIGN_CAP";throw err}
+    const order=await tx.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
+    await tx.orderEvent.create({data:{orderId:order.id,type:"ORDER_SUBMITTED",actorRole:"EARNER",actorId:session.sub}});
+    return order;
+   });
+   return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
+  } catch(err) {
+   if(err.code==="DUPLICATE_BUYER")return json(res,409,{error:"This customer already has an active or completed order"});
+   if(err.code==="CAMPAIGN_CAP")return json(res,409,{error:"Campaign reward cap reached"});
+   throw err;
+  }
+ }
+
+ const reissue=p.match(/^\/orders\/([^/]+)\/reissue-confirmation$/);
+ if(m==="POST"&&reissue){
+  requireRole(session,"EARNER");
+  const o=await db.order.findUnique({where:{id:reissue[1]}});
+  if(!o)return json(res,404,{error:"Order not found"});
+  if(o.earnerId!==session.sub)return json(res,403,{error:"Forbidden"});
+  if(o.status!=="SUBMITTED")return json(res,409,{error:"Buyer link can only be re-issued before buyer confirmation"});
+  const confirmToken=crypto.randomBytes(24).toString("hex");
+  await db.$transaction(async tx=>{
+   await tx.order.update({where:{id:o.id},data:{customerConfirmTokenHash:hashSecret(confirmToken)}});
+   await tx.orderEvent.create({data:{orderId:o.id,type:"CUSTOMER_LINK_REISSUED",actorRole:"EARNER",actorId:session.sub}});
+  });
+  return json(res,200,{id:o.id,status:o.status,customerConfirmationPath:"/confirm-order?token="+confirmToken});
  }
 
  const action=p.match(/^\/orders\/([^/]+)\/(accept|ready|cancel)$/);
