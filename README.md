@@ -25,3 +25,15 @@ This is a **local browser demo**, not a real marketplace. Sample businesses and 
 
 ## Deploy
 Vercel: Import repository as **Other** framework, leave build command empty, set output directory to `.` (repository root). Static hosting only; demo data will remain browser-local.
+
+
+## V2 transaction engine
+The repository now includes a PostgreSQL/Prisma API for the first real ORDER lifecycle: authenticated EARNER/BUSINESS roles, live campaigns, deterministic attribution codes, idempotent order creation, merchant accept/deliver/cancel transitions, reward caps, and append-only reward ledger entries.
+
+### Local setup
+1. Copy `.env.example` to `.env` and set PostgreSQL `DATABASE_URL` plus a 32+ character `JWT_SECRET`.
+2. Run `npm install`.
+3. Run `npm run db:deploy && npm run db:seed`.
+4. Run `npm test` then `npm run dev`.
+
+The seed creates local demo credentials only. Do not deploy those credentials to a public production database. The existing browser UI is still a prototype and is **not yet wired to these APIs**. Production gaps still include OTP/customer confirmation, payout settlement, business KYC, rate limiting, dispute workflow, and secure lead/content evidence storage.
