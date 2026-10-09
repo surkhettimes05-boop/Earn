@@ -6,15 +6,22 @@ window.EARN_API = (() => {
   async function request(path, options={}){
     const headers={"content-type":"application/json",...(options.headers||{})};
     const current=token(); if(current)headers.authorization="Bearer "+current;
-    const res=await fetch("/api"+path,{...options,headers});
+    let res;
+    try{res=await fetch("/api"+path,{...options,headers})}catch{throw new Error("Could not connect. Check your internet and try again.")}
     let data={}; try{data=await res.json()}catch{}
-    if(!res.ok)throw new Error(data.error||"Request failed");
+    if(!res.ok)throw new Error(data.error||"Request failed. Try again.");
     return data;
   }
   return {
     token,saveToken,clearToken,
     login:(phone,password)=>request("/auth/login",{method:"POST",body:JSON.stringify({phone,password})}),
     signup:data=>request("/auth/signup",{method:"POST",body:JSON.stringify(data)}),
-    me:()=>request("/me")
+    me:()=>request("/me"),
+    campaigns:()=>request("/campaigns"),
+    startSale:campaignId=>request("/campaigns/"+encodeURIComponent(campaignId)+"/start",{method:"POST",body:"{}"}),
+    createOrder:data=>request("/orders",{method:"POST",body:JSON.stringify(data)}),
+    reissueBuyerLink:orderId=>request("/orders/"+encodeURIComponent(orderId)+"/reissue-confirmation",{method:"POST",body:"{}"}),
+    myOrders:()=>request("/me/orders"),
+    myEarnings:()=>request("/me/earnings")
   };
 })();

@@ -8,5 +8,15 @@ window.EARN_STRINGS = {
   home:"Home", sell:"Sell", orders:"Orders", money:"Money", campaigns:"Campaigns",
   nextStage:"Coming in the next stage.", welcome:"Welcome", signedInSuffix:"account is signed in.",
   authError:"Something went wrong. Try again.", roleMismatch:"This account uses a different role. Choose the correct role and try again.",
-  phoneHint:"Use a Nepal mobile number, for example 98XXXXXXXX.", passwordHint:"Use at least 8 characters."
+  phoneHint:"Use a Nepal mobile number, for example 98XXXXXXXX.", passwordHint:"Use at least 8 characters.",
+  ready:"Ready for payout", onWay:"On the way", withdraw:"Withdraw", withdrawSoon:"Coming soon — payouts are handled by EARN while withdrawal requests are being built.",
+  sellEarn:"Sell and earn", yourOrders:"Your orders", noProducts:"No products are ready to sell right now.", noOrders:"No orders yet. Pick a product and make your first sale.",
+  noEarnings:"No earnings yet. Completed deliveries will appear here.", refresh:"Try again", perUnit:"per unit", youEarn:"You earn",
+  buyerName:"Buyer name", buyerPhone:"Buyer phone", quantity:"Quantity", sendBuyer:"Send to buyer to confirm", sending:"Creating buyer link…",
+  buyerLink:"Buyer confirmation link", copyLink:"Copy link", copied:"Link copied", shareWhatsApp:"Share on WhatsApp", getAgain:"Get buyer link again",
+  reissueWarning:"Getting a new link will stop the old link from working.", reissueConfirm:"Get a new link and stop the old one?", gettingLink:"Getting new link…",
+  chooseProduct:"Choose a product to sell", orderCreated:"Sale created. Send this link to the buyer.", buyerMessage:"Please confirm your order here:",
+  loadError:"Could not load this page. Try again.", retryLinkError:"The sale already exists, but its buyer link is no longer available. Open Orders and get the buyer link again.", capError:"This product has reached its sales limit.", duplicateError:"This buyer already has an active or completed order for this product.", statusSubmitted:"Waiting for buyer", statusConfirmed:"Buyer confirmed", statusAccepted:"Accepted",
+  statusPayment:"Waiting for payment", statusPaid:"Paid", statusReady:"Ready for pickup", statusPicked:"Picked up", statusDelivery:"Out for delivery",
+  statusDelivered:"Delivered", statusVerified:"Completed", statusPartial:"Partly delivered", statusCancelled:"Cancelled", statusReturned:"Returned", statusDisputed:"Needs review"
 };
