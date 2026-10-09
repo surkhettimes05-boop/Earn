@@ -107,3 +107,21 @@ test("sale link owned by another earner is rejected", async()=>{
   const f=await fixture({earnerNumber:16}), other=await user("EARNER",316), token=sign(other);
   const res=await request("POST","/api/orders",token,orderBody(f,"16")); assert.equal(res.statusCode,400); assert.match(res.body.error,/attribution/i);
 });
+
+
+test("owning earner can re-issue buyer link and old token is invalidated", async()=>{
+  const f=await fixture({earnerNumber:17}), created=await request("POST","/api/orders",f.token,orderBody(f,"17"));
+  ids.orders.push(created.body.id);
+  const oldPath=created.body.customerConfirmationPath;
+  const reissued=await request("POST","/api/orders/"+created.body.id+"/reissue-confirmation",f.token,{});
+  assert.equal(reissued.statusCode,200);
+  assert.notEqual(reissued.body.customerConfirmationPath,oldPath);
+  const oldToken=new URL(oldPath,"http://x").searchParams.get("token");
+  const newToken=new URL(reissued.body.customerConfirmationPath,"http://x").searchParams.get("token");
+  const oldLookup=await request("GET","/api/customer/order?token="+oldToken,null);
+  const newLookup=await request("GET","/api/customer/order?token="+newToken,null);
+  assert.equal(oldLookup.statusCode,404);
+  assert.equal(newLookup.statusCode,200);
+  assert.equal(newLookup.body.id,created.body.id);
+  assert.equal(await db.orderEvent.count({where:{orderId:created.body.id,type:"CUSTOMER_LINK_REISSUED"}}),1);
+});
