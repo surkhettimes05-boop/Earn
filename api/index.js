@@ -121,6 +121,13 @@ module.exports=async(req,res)=>{try{
   return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
  }
 
+ if(m==="GET"&&p==="/customer/order"){
+  const tokenValue=u.searchParams.get("token")||"";
+  if(!text(tokenValue,20,200))return json(res,400,{error:"Invalid confirmation token"});
+  const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(tokenValue)},include:{campaign:{select:{title:true}},business:{select:{name:true}}}});
+  if(!o)return json(res,404,{error:"Order confirmation not found"});
+  return json(res,200,{id:o.id,status:o.status,customerName:o.customerName,product:o.product,quantity:o.quantity,campaign:o.campaign,business:o.business});
+ }
  if(m==="POST"&&p==="/customer/confirm-order"){
   const b=await body(req);
   if(!text(b.token,20,200))return json(res,400,{error:"Invalid confirmation token"});
@@ -128,8 +135,9 @@ module.exports=async(req,res)=>{try{
   if(!o)return json(res,404,{error:"Order confirmation not found"});
   if(o.status==="CUSTOMER_CONFIRMED")return json(res,200,{id:o.id,status:o.status});
   if(o.status!=="SUBMITTED")return json(res,409,{error:"Order can no longer be confirmed"});
-  await db.order.update({where:{id:o.id},data:{status:"CUSTOMER_CONFIRMED",customerConfirmedAt:new Date()}});
-  return json(res,200,{id:o.id,status:"CUSTOMER_CONFIRMED"});
+  const pin=String(crypto.randomInt(100000,1000000));
+  await db.order.update({where:{id:o.id},data:{status:"CUSTOMER_CONFIRMED",customerConfirmedAt:new Date(),deliveryPinHash:hashSecret(pin)}});
+  return json(res,200,{id:o.id,status:"CUSTOMER_CONFIRMED",deliveryPin:pin});
  }
  const tr=p.match(/^\/orders\/([^/]+)\/(accept|deliver|cancel)$/);
  if(m==="POST"&&tr){
@@ -142,9 +150,7 @@ module.exports=async(req,res)=>{try{
    if(o.status===desired)return o;
    if(desired==="ACCEPTED"){
     if(o.status!=="CUSTOMER_CONFIRMED")throw Object.assign(new Error("Customer must confirm the order first"),{status:409});
-    const pin=String(crypto.randomInt(100000,1000000));
-    const updated=await tx.order.update({where:{id:o.id},data:{status:"ACCEPTED",deliveryPinHash:hashSecret(pin)}});
-    return {...updated,deliveryPin:pin};
+    return tx.order.update({where:{id:o.id},data:{status:"ACCEPTED"}});
    }
    if(desired==="DELIVERED"){
     if(o.status!=="ACCEPTED")throw Object.assign(new Error("Order must be accepted first"),{status:409});
