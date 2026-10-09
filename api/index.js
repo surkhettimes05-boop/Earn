@@ -192,11 +192,27 @@ module.exports=async(req,res)=>{try{
   const a=await db.attribution.findUnique({where:{code:b.attributionCode}}); if(!a||a.earnerId!==session.sub)return json(res,400,{error:"Invalid attribution"});
   const c=await db.campaign.findFirst({where:{id:a.campaignId,status:"LIVE",type:"ORDER"}}); if(!c)return json(res,409,{error:"Order campaign unavailable"});
   const phoneHash=hashPhone(b.customerPhone),quantity=Number(b.quantity),quote=commissionQuote(c,quantity),subtotal=BigInt(c.unitPricePaisa||0)*BigInt(quantity);
-  const duplicate=await db.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{notIn:["CANCELLED","RETURNED"]}}}); if(duplicate)return json(res,409,{error:"This customer already has an active or completed order"});
   const confirmToken=crypto.randomBytes(24).toString("hex");
-  const o=await db.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
-  await db.orderEvent.create({data:{orderId:o.id,type:"ORDER_SUBMITTED",actorRole:"EARNER",actorId:session.sub}});
-  return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
+  try {
+   const o=await db.$transaction(async tx=>{
+    // Lock this campaign row so cap checks and inserts for the same campaign serialize.
+    await tx.$queryRawUnsafe('SELECT id FROM "Campaign" WHERE id = $1 FOR UPDATE',c.id);
+    const duplicate=await tx.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{notIn:["CANCELLED","RETURNED"]}}});
+    if(duplicate){const err=new Error("DUPLICATE_BUYER");err.code="DUPLICATE_BUYER";throw err}
+    // Preserve the removed handler's cap semantics: rewards already EARNED, PAYABLE
+    // or PAID consume the campaign reward cap.
+    const delivered=await tx.reward.count({where:{order:{campaignId:c.id},status:{in:["EARNED","PAYABLE","PAID"]}}});
+    if(delivered>=c.cap){const err=new Error("CAMPAIGN_CAP");err.code="CAMPAIGN_CAP";throw err}
+    const order=await tx.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
+    await tx.orderEvent.create({data:{orderId:order.id,type:"ORDER_SUBMITTED",actorRole:"EARNER",actorId:session.sub}});
+    return order;
+   });
+   return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
+  } catch(err) {
+   if(err.code==="DUPLICATE_BUYER")return json(res,409,{error:"This customer already has an active or completed order"});
+   if(err.code==="CAMPAIGN_CAP")return json(res,409,{error:"Campaign reward cap reached"});
+   throw err;
+  }
  }
 
  const action=p.match(/^\/orders\/([^/]+)\/(accept|ready|cancel)$/);
