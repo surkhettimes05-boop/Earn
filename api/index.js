@@ -185,27 +185,6 @@ module.exports=async(req,res)=>{try{
  }
 
  if(m==="POST"&&p==="/orders"){
-  requireRole(session,"EARNER");
-  const b=await body(req);
-  if(!b.idempotencyKey)return json(res,400,{error:"idempotencyKey required"});
-  if(!text(b.customerName,2,80)||!validPhone(cleanPhone(b.customerPhone))||!text(b.product,2,120)||!Number.isInteger(Number(b.quantity))||Number(b.quantity)<1)return json(res,400,{error:"Enter valid order details"});
-  const existing=await db.order.findUnique({where:{idempotencyKey:b.idempotencyKey}});
-  if(existing){if(existing.earnerId!==session.sub)return json(res,409,{error:"Idempotency key conflict"});return json(res,200,existing)}
-  const a=await db.attribution.findUnique({where:{code:b.attributionCode}});
-  if(!a||a.earnerId!==session.sub)return json(res,400,{error:"Invalid attribution"});
-  const c=await db.campaign.findFirst({where:{id:a.campaignId,status:"LIVE",type:"ORDER"}});
-  if(!c)return json(res,409,{error:"Order campaign unavailable"});
-  const phoneHash=hashPhone(b.customerPhone);
-  const duplicate=await db.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{in:["SUBMITTED","CUSTOMER_CONFIRMED","ACCEPTED","DELIVERED"]}}});
-  if(duplicate)return json(res,409,{error:"This customer already has an active or completed order for this opportunity"});
-  const delivered=await db.reward.count({where:{order:{campaignId:c.id},status:{in:["EARNED","PAYABLE","PAID"]}}});
-  if(delivered>=c.cap)return json(res,409,{error:"Campaign reward cap reached"});
-  const confirmToken=crypto.randomBytes(24).toString("hex"),quantity=Number(b.quantity),quote=commissionQuote(c,quantity);
-  const o=await db.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa}});
-  return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
- }
-
- if(m==="POST"&&p==="/orders"){
   requireRole(session,"EARNER"); const b=await body(req);
   if(!b.idempotencyKey)return json(res,400,{error:"idempotencyKey required"});
   if(!text(b.customerName,2,80)||!validPhone(cleanPhone(b.customerPhone))||!text(b.product,2,120)||!Number.isInteger(Number(b.quantity))||Number(b.quantity)<1)return json(res,400,{error:"Enter valid order details"});
