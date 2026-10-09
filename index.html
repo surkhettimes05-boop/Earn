@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EARN</title><meta name="theme-color" content="#F4F7F5">
+<title>EARN</title><meta name="theme-color" content="#F4F7F5"><meta name="referrer" content="no-referrer">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -40,7 +40,7 @@ async function reissue(id,btn){if(!confirm(S.reissueConfirm))return;btn.disabled
 async function moneyScreen(){const v=document.querySelector("#view");v.innerHTML='<h1 class="page-title">'+S.money+'</h1>';try{const d=await earnerData(),payable=d.orders.flatMap(o=>o.settlements||[]).filter(x=>x.partyType==="EARNER"&&x.status==="PAYABLE").reduce((n,x)=>n+Number(x.amountPaisa||0),0),coming=Math.max(0,Number(d.earnings.balancePaisa||0)-payable);v.innerHTML+=d.earnings.entries.length?'<div class="money-grid"><div class="money"><span class="muted">'+S.ready+'</span><strong>Rs '+npr(payable)+'</strong></div><div class="money"><span class="muted">'+S.onWay+'</span><strong>Rs '+npr(coming)+'</strong></div></div>':'<div class="empty">'+S.noEarnings+'</div>';v.innerHTML+='<button class="btn secondary" disabled style="margin-top:12px">'+S.withdraw+' · '+S.nextStage+'</button><p class="hint">'+S.withdrawSoon+'</p>'}catch(e){showLoadError(v,e)}}
 function plainError(m){if(/cap/i.test(m))return S.capError;if(/already has an active|duplicate/i.test(m))return S.duplicateError;return m||S.authError}
 function showLoadError(v,e){v.innerHTML+='<div class="error">'+esc(plainError(e.message)||S.loadError)+'</div><button class="btn secondary" id="retry">'+S.refresh+'</button>';onclick("retry",shell)}
-const buyerToken=()=>new URLSearchParams(location.search).get("token")||"";
+let buyerTokenMemory="";\nfunction buyerToken(){if(buyerTokenMemory)return buyerTokenMemory;buyerTokenMemory=new URLSearchParams(location.search).get("token")||"";if(buyerTokenMemory)history.replaceState(null,"",location.pathname+location.hash);return buyerTokenMemory}
 function buyerMoney(p){return "Rs "+npr(p)}
 function buyerSummary(o){return '<div class="card summary"><div class="summary-row"><span>'+S.orderedFrom+'</span><strong>'+esc(o.business?.name||"EARN partner")+'</strong></div><div class="summary-row"><span>'+S.goods+'</span><strong>'+esc(o.product)+'</strong></div><div class="summary-row"><span>'+S.quantity+'</span><strong>'+esc(o.quantity)+'</strong></div><div class="summary-row"><span>'+S.price+'</span><strong>'+buyerMoney(o.unitPricePaisa)+'</strong></div><div class="summary-row"><span>'+S.total+'</span><strong>'+buyerMoney(o.productSubtotalPaisa)+'</strong></div></div>'}
 async function buyerPage(){bottom.hidden=true;app.innerHTML='<div class="buyer-head"><div class="brand">'+S.brand+'</div><p class="muted">'+S.statusTitle+'</p></div>';const token=buyerToken();if(!token){app.innerHTML+='<div class="error">'+S.invalidLink+'</div>';return}try{const o=await A.buyerOrder(token);state.buyerOrder=o;renderBuyerState(o,token)}catch(e){app.innerHTML+='<div class="error">'+(/not found|invalid order token/i.test(e.message)?S.invalidLink:esc(plainError(e.message)))+'</div>'}}
