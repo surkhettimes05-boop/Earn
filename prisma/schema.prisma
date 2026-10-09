@@ -27,6 +27,12 @@ enum CampaignType {
   REFERRAL
 }
 
+enum CommissionBasis {
+  FIXED_ORDER
+  PER_UNIT
+  PERCENT_GMV
+}
+
 enum OrderStatus {
   SUBMITTED
   CUSTOMER_CONFIRMED
@@ -87,6 +93,12 @@ model Campaign {
   title       String
   city        String
   rewardPaisa BigInt
+  commissionBasis CommissionBasis @default(FIXED_ORDER)
+  unitLabel String?
+  unitPricePaisa BigInt?
+  businessCommissionPaisa BigInt?
+  businessCommissionBps Int?
+  earnerShareBps Int @default(10000)
   cap         Int
   successRule String
   createdAt   DateTime       @default(now())
@@ -118,6 +130,13 @@ model Order {
   customerConfirmedAt DateTime?
   deliveryPinHash String?
   deliveryVerifiedAt DateTime?
+  unitPricePaisaSnapshot BigInt?
+  commissionBasisSnapshot CommissionBasis?
+  businessCommissionPaisaSnapshot BigInt?
+  businessCommissionBpsSnapshot Int?
+  earnerShareBpsSnapshot Int?
+  earnerRewardPaisaSnapshot BigInt?
+  platformFeePaisaSnapshot BigInt?
   product           String
   quantity          Int
   status            OrderStatus @default(SUBMITTED)
