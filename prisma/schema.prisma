@@ -1,0 +1,18 @@
+generator client { provider = "prisma-client-js" }
+datasource db { provider = "postgresql" url = env("DATABASE_URL") }
+
+enum Role { EARNER BUSINESS ADMIN }
+enum CampaignStatus { DRAFT LIVE PAUSED CLOSED }
+enum CampaignType { ORDER LEAD CONTENT REFERRAL }
+enum OrderStatus { SUBMITTED ACCEPTED DELIVERED CANCELLED }
+enum RewardStatus { PENDING EARNED PAYABLE PAID REVERSED }
+enum LedgerKind { REWARD_EARNED PAYOUT REWARD_REVERSAL }
+
+model User { id String @id @default(cuid()) phone String @unique passwordHash String role Role createdAt DateTime @default(now()) business Business? earner EarnerProfile? orders Order[] @relation("EarnerOrders") ledger LedgerEntry[] }
+model EarnerProfile { id String @id @default(cuid()) userId String @unique user User @relation(fields:[userId],references:[id]) displayName String }
+model Business { id String @id @default(cuid()) ownerId String @unique owner User @relation(fields:[ownerId],references:[id]) name String verified Boolean @default(false) campaigns Campaign[] orders Order[] }
+model Campaign { id String @id @default(cuid()) businessId String business Business @relation(fields:[businessId],references:[id]) type CampaignType status CampaignStatus @default(DRAFT) title String city String rewardPaisa BigInt cap Int successRule String createdAt DateTime @default(now()) orders Order[] }
+model Attribution { id String @id @default(cuid()) code String @unique campaignId String earnerId String createdAt DateTime @default(now()) @@unique([campaignId,earnerId]) }
+model Order { id String @id @default(cuid()) campaignId String campaign Campaign @relation(fields:[campaignId],references:[id]) businessId String business Business @relation(fields:[businessId],references:[id]) earnerId String earner User @relation("EarnerOrders",fields:[earnerId],references:[id]) attributionCode String customerName String customerPhoneHash String product String quantity Int status OrderStatus @default(SUBMITTED) idempotencyKey String @unique createdAt DateTime @default(now()) updatedAt DateTime @updatedAt reward Reward? @@index([businessId,status]) }
+model Reward { id String @id @default(cuid()) orderId String @unique order Order @relation(fields:[orderId],references:[id]) userId String amountPaisa BigInt status RewardStatus @default(EARNED) createdAt DateTime @default(now()) }
+model LedgerEntry { id String @id @default(cuid()) userId String user User @relation(fields:[userId],references:[id]) kind LedgerKind amountPaisa BigInt referenceType String referenceId String idempotencyKey String @unique createdAt DateTime @default(now()) @@index([userId,createdAt]) }
