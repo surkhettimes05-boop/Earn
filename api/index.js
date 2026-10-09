@@ -199,10 +199,12 @@ module.exports=async(req,res)=>{try{
     await tx.$queryRawUnsafe('SELECT id FROM "Campaign" WHERE id = $1 FOR UPDATE',c.id);
     const duplicate=await tx.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{notIn:["CANCELLED","RETURNED"]}}});
     if(duplicate){const err=new Error("DUPLICATE_BUYER");err.code="DUPLICATE_BUYER";throw err}
-    // Preserve the removed handler's cap semantics: rewards already EARNED, PAYABLE
-    // or PAID consume the campaign reward cap.
-    const delivered=await tx.reward.count({where:{order:{campaignId:c.id},status:{in:["EARNED","PAYABLE","PAID"]}}});
-    if(delivered>=c.cap){const err=new Error("CAMPAIGN_CAP");err.code="CAMPAIGN_CAP";throw err}
+    // The removed handler counted EARNED/PAYABLE/PAID rewards against the cap.
+    // Reserve capacity earlier as well: every non-cancelled/non-returned order consumes
+    // one slot. Without this reservation, two new orders could both pass a reward-only
+    // count before either has reached reward creation.
+    const reserved=await tx.order.count({where:{campaignId:c.id,status:{notIn:["CANCELLED","RETURNED"]}}});
+    if(reserved>=c.cap){const err=new Error("CAMPAIGN_CAP");err.code="CAMPAIGN_CAP";throw err}
     const order=await tx.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
     await tx.orderEvent.create({data:{orderId:order.id,type:"ORDER_SUBMITTED",actorRole:"EARNER",actorId:session.sub}});
     return order;
