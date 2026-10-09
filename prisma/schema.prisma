@@ -29,6 +29,7 @@ enum CampaignType {
 
 enum OrderStatus {
   SUBMITTED
+  CUSTOMER_CONFIRMED
   ACCEPTED
   DELIVERED
   CANCELLED
@@ -113,6 +114,10 @@ model Order {
   attributionCode   String
   customerName      String
   customerPhoneHash String
+  customerConfirmTokenHash String? @unique
+  customerConfirmedAt DateTime?
+  deliveryPinHash String?
+  deliveryVerifiedAt DateTime?
   product           String
   quantity          Int
   status            OrderStatus @default(SUBMITTED)
