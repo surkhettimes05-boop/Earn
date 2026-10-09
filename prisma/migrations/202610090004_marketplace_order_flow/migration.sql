@@ -1,0 +1,106 @@
+-- EARN ORDER marketplace workflow: payment, logistics, reconciliation, settlement and disputes.
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'PAYMENT_PENDING';
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'PAID';
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'READY_FOR_PICKUP';
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'PICKED_UP';
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'OUT_FOR_DELIVERY';
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'VERIFIED';
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'PARTIALLY_DELIVERED';
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'DELIVERY_FAILED';
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'RETURN_IN_PROGRESS';
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'RETURNED';
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'DISPUTED';
+
+DO $$ BEGIN CREATE TYPE "PaymentStatus" AS ENUM ('PENDING','SUBMITTED','CONFIRMED','FAILED','REFUND_PENDING','REFUNDED'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN CREATE TYPE "LogisticsStatus" AS ENUM ('UNASSIGNED','ASSIGNED','PICKED_UP','OUT_FOR_DELIVERY','DELIVERED','FAILED','RETURNING','RETURNED'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN CREATE TYPE "SettlementStatus" AS ENUM ('HELD','PAYABLE','PAID','REVERSED'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN CREATE TYPE "DisputeStatus" AS ENUM ('OPEN','RESOLVED','REJECTED'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+ALTER TABLE "Order"
+ ADD COLUMN IF NOT EXISTS "acceptedAt" TIMESTAMP(3),
+ ADD COLUMN IF NOT EXISTS "paymentConfirmedAt" TIMESTAMP(3),
+ ADD COLUMN IF NOT EXISTS "readyForPickupAt" TIMESTAMP(3),
+ ADD COLUMN IF NOT EXISTS "pickedUpAt" TIMESTAMP(3),
+ ADD COLUMN IF NOT EXISTS "deliveredAt" TIMESTAMP(3),
+ ADD COLUMN IF NOT EXISTS "verifiedAt" TIMESTAMP(3),
+ ADD COLUMN IF NOT EXISTS "cancelledAt" TIMESTAMP(3),
+ ADD COLUMN IF NOT EXISTS "cancelReason" TEXT,
+ ADD COLUMN IF NOT EXISTS "acceptedQuantity" INTEGER,
+ ADD COLUMN IF NOT EXISTS "pickedUpQuantity" INTEGER,
+ ADD COLUMN IF NOT EXISTS "deliveredQuantity" INTEGER,
+ ADD COLUMN IF NOT EXISTS "returnedQuantity" INTEGER NOT NULL DEFAULT 0,
+ ADD COLUMN IF NOT EXISTS "productSubtotalPaisaSnapshot" BIGINT,
+ ADD COLUMN IF NOT EXISTS "totalCommissionPaisaSnapshot" BIGINT,
+ ADD COLUMN IF NOT EXISTS "merchantSettlementPaisaSnapshot" BIGINT,
+ ADD COLUMN IF NOT EXISTS "deliveryFeePaisa" BIGINT NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS "Payment" (
+ "id" TEXT PRIMARY KEY,
+ "orderId" TEXT NOT NULL UNIQUE REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+ "amountPaisa" BIGINT NOT NULL,
+ "method" TEXT NOT NULL,
+ "reference" TEXT,
+ "status" "PaymentStatus" NOT NULL DEFAULT 'PENDING',
+ "submittedAt" TIMESTAMP(3),
+ "confirmedAt" TIMESTAMP(3),
+ "refundedPaisa" BIGINT NOT NULL DEFAULT 0,
+ "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "LogisticsAssignment" (
+ "id" TEXT PRIMARY KEY,
+ "orderId" TEXT NOT NULL UNIQUE REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+ "transporterName" TEXT NOT NULL,
+ "transporterPhone" TEXT,
+ "quotedFeePaisa" BIGINT NOT NULL,
+ "transporterCostPaisa" BIGINT NOT NULL,
+ "status" "LogisticsStatus" NOT NULL DEFAULT 'ASSIGNED',
+ "pickupCodeHash" TEXT,
+ "assignedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ "pickedUpAt" TIMESTAMP(3),
+ "deliveredAt" TIMESTAMP(3),
+ "returnedAt" TIMESTAMP(3)
+);
+
+CREATE TABLE IF NOT EXISTS "Settlement" (
+ "id" TEXT PRIMARY KEY,
+ "orderId" TEXT NOT NULL,
+ "partyType" TEXT NOT NULL,
+ "partyId" TEXT,
+ "amountPaisa" BIGINT NOT NULL,
+ "status" "SettlementStatus" NOT NULL DEFAULT 'HELD',
+ "paidAt" TIMESTAMP(3),
+ "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE("orderId","partyType")
+);
+
+CREATE TABLE IF NOT EXISTS "Dispute" (
+ "id" TEXT PRIMARY KEY,
+ "orderId" TEXT NOT NULL REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+ "openedBy" TEXT NOT NULL,
+ "reason" TEXT NOT NULL,
+ "details" TEXT,
+ "status" "DisputeStatus" NOT NULL DEFAULT 'OPEN',
+ "resolution" TEXT,
+ "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ "resolvedAt" TIMESTAMP(3)
+);
+
+CREATE TABLE IF NOT EXISTS "OrderEvent" (
+ "id" TEXT PRIMARY KEY,
+ "orderId" TEXT NOT NULL REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+ "type" TEXT NOT NULL,
+ "actorRole" TEXT NOT NULL,
+ "actorId" TEXT,
+ "metadata" JSONB,
+ "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS "OrderEvent_orderId_createdAt_idx" ON "OrderEvent"("orderId","createdAt");
+CREATE INDEX IF NOT EXISTS "Dispute_orderId_status_idx" ON "Dispute"("orderId","status");
+
+ALTER TABLE "Order" ADD CONSTRAINT "Order_quantities_nonnegative" CHECK (
+ ("acceptedQuantity" IS NULL OR "acceptedQuantity" >= 0) AND
+ ("pickedUpQuantity" IS NULL OR "pickedUpQuantity" >= 0) AND
+ ("deliveredQuantity" IS NULL OR "deliveredQuantity" >= 0) AND
+ "returnedQuantity" >= 0
+);
