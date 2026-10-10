@@ -73,7 +73,7 @@ test("POST /api/orders creates snapshots and one ORDER_SUBMITTED event", async()
   assert.equal(res.body.productSubtotalPaisaSnapshot,"440000");
   assert.equal(res.body.totalCommissionPaisaSnapshot,"12000");
   assert.equal(res.body.merchantSettlementPaisaSnapshot,"428000");
-  assert.match(res.body.customerConfirmationPath,/^\/confirm-order\?token=/);
+  assert.match(res.body.customerConfirmationPath,/^\/order\?token=/);
   assert.equal(await db.orderEvent.count({where:{orderId:res.body.id,type:"ORDER_SUBMITTED"}}),1);
 });
 
