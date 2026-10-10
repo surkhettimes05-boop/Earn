@@ -231,6 +231,7 @@ model Order {
   events            OrderEvent[]
 
   @@index([businessId, status])
+  @@index([campaignId, expiresAt])
 }
 
 model CampaignRevision {
