@@ -72,15 +72,17 @@ module.exports=async(req,res)=>{try{
  }
 
  if(m==="GET"&&p==="/campaigns"){
-  const rows=await db.campaign.findMany({where:{status:"LIVE"},include:{business:{select:{name:true,verified:true}},orders:{where:{status:{notIn:["CANCELLED","RETURNED"]}},select:{quantity:true}}},orderBy:{createdAt:"desc"}});
-  return json(res,200,rows.map(({orders,...x})=>({...x,remainingQuantity:x.availableQuantity==null?null:Math.max(0,x.availableQuantity-orders.reduce((n,o)=>n+o.quantity,0))})));
+  const now=new Date(),activeWhere={status:{notIn:["CANCELLED","RETURNED"]},OR:[{expiresAt:null},{expiresAt:{gt:now}},{status:{notIn:["SUBMITTED","CUSTOMER_CONFIRMED"]}}]};
+  const rows=await db.campaign.findMany({where:{status:"LIVE"},include:{business:{select:{name:true,verified:true}},orders:{where:activeWhere,select:{quantity:true}}},orderBy:{createdAt:"desc"}});
+  return json(res,200,rows.map(({orders,...x})=>{const used=orders.reduce((n,o)=>n+o.quantity,0),remaining=x.availableQuantity==null?null:Math.max(0,x.availableQuantity-used);return {...x,remainingQuantity:remaining,soldOut:orders.length>=x.cap||remaining===0}}));
  }
  const publicCampaign=p.match(/^\/campaigns\/([^/]+)$/);
  if(m==="GET"&&publicCampaign){
-  const row=await db.campaign.findFirst({where:{id:publicCampaign[1],type:"ORDER",status:{in:["LIVE","PAUSED"]}},include:{business:{select:{name:true,verified:true}},orders:{where:{status:{notIn:["CANCELLED","RETURNED"]}},select:{quantity:true}}}});
+  const now=new Date(),activeWhere={status:{notIn:["CANCELLED","RETURNED"]},OR:[{expiresAt:null},{expiresAt:{gt:now}},{status:{notIn:["SUBMITTED","CUSTOMER_CONFIRMED"]}}]};
+  const row=await db.campaign.findFirst({where:{id:publicCampaign[1],type:"ORDER",status:{in:["LIVE","PAUSED"]}},include:{business:{select:{name:true,verified:true}},orders:{where:activeWhere,select:{quantity:true}}}});
   if(!row)return json(res,404,{error:"Product not found"});
-  const {orders,...x}=row,used=orders.reduce((n,o)=>n+o.quantity,0);
-  return json(res,200,{...x,remainingQuantity:x.availableQuantity==null?null:Math.max(0,x.availableQuantity-used),soldOut:x.status==="PAUSED"||x.availableQuantity!=null&&used>=x.availableQuantity});
+  const {orders,...x}=row,used=orders.reduce((n,o)=>n+o.quantity,0),remaining=x.availableQuantity==null?null:Math.max(0,x.availableQuantity-used);
+  return json(res,200,{...x,remainingQuantity:remaining,soldOut:x.status==="PAUSED"||orders.length>=x.cap||remaining===0});
  }
 
  // A shared product link is earner-bound by its attribution code. The customer
