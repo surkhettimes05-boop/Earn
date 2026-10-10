@@ -251,6 +251,38 @@ module.exports=async(req,res)=>{try{
   return json(res,201,row);
  }
 
+ const editCampaign=p.match(/^\/campaigns\/([^/]+)$/);
+ if(m==="PATCH"&&editCampaign){
+  requireRole(session,"BUSINESS","ADMIN"); const b=await body(req);
+  const current=await db.campaign.findUnique({where:{id:editCampaign[1]},include:{business:true}});
+  if(!current)return json(res,404,{error:"Campaign not found"});
+  if(session.role!=="ADMIN"&&current.business.ownerId!==session.sub)return json(res,403,{error:"Forbidden"});
+  if(current.status==="CLOSED")return json(res,409,{error:"Closed campaigns cannot be edited"});
+  const economic=["unitPriceNpr","businessCommissionNpr","businessCommissionPercent","earnerSharePercent","commissionBasis","unitLabel"].some(k=>Object.prototype.hasOwnProperty.call(b,k));
+  if(current.status==="LIVE"&&economic&&b.confirmEconomicVersion!==true)return json(res,409,{error:"Economic changes create a new campaign version. Confirm the version change first."});
+  const data={};
+  if(text(b.title,3,100))data.title=b.title.trim();
+  if(text(b.description,10,800))data.description=b.description.trim();
+  if(text(b.serviceArea,2,120)){data.serviceArea=b.serviceArea.trim();data.city=b.serviceArea.trim()}
+  if(text(b.whatsappPitch,10,700))data.whatsappPitch=b.whatsappPitch.trim();
+  if(Object.prototype.hasOwnProperty.call(b,"customerOffer"))data.customerOffer=text(b.customerOffer,2,500)?b.customerOffer.trim():null;
+  if(text(b.deliveryInfo,5,500))data.deliveryInfo=b.deliveryInfo.trim();
+  if(text(b.campaignTerms,5,1000))data.campaignTerms=b.campaignTerms.trim();
+  if(Array.isArray(b.sellingPoints)){const pts=b.sellingPoints.map(x=>String(x).trim()).filter(Boolean);if(pts.length<3||pts.length>5)return json(res,400,{error:"Keep 3–5 selling points"});data.sellingPoints=pts}
+  if(Object.prototype.hasOwnProperty.call(b,"availableQuantity")){const q=Number(b.availableQuantity);if(!Number.isInteger(q)||q<1)return json(res,400,{error:"Available quantity must be positive"});data.availableQuantity=q}
+  if(Object.prototype.hasOwnProperty.call(b,"mainImageData")||Object.prototype.hasOwnProperty.call(b,"supportingImageData"))Object.assign(data,campaignImages({mainImageData:Object.prototype.hasOwnProperty.call(b,"mainImageData")?b.mainImageData:current.mainImageData,supportingImageData:Object.prototype.hasOwnProperty.call(b,"supportingImageData")?b.supportingImageData:current.supportingImageData}));
+  if(economic){
+   const basis=String(b.commissionBasis||current.commissionBasis),price=Number(b.unitPriceNpr??Number(current.unitPricePaisa||0)/100),commission=Number(b.businessCommissionNpr??Number(current.businessCommissionPaisa||0)/100),pct=Number(b.businessCommissionPercent??Number(current.businessCommissionBps||0)/100),share=Number(b.earnerSharePercent??current.earnerShareBps/100);
+   if(!["FIXED_ORDER","PER_UNIT","PERCENT_GMV"].includes(basis)||!Number.isFinite(share)||share<=0||share>100)return json(res,400,{error:"Invalid commission terms"});
+   data.commissionBasis=basis;data.unitLabel=text(b.unitLabel,1,30)?b.unitLabel.trim():current.unitLabel;data.unitPricePaisa=price>0?BigInt(Math.round(price*100)):current.unitPricePaisa;data.businessCommissionPaisa=basis!=="PERCENT_GMV"&&commission>0?BigInt(Math.round(commission*100)):null;data.businessCommissionBps=basis==="PERCENT_GMV"&&pct>0?Math.round(pct*100):null;data.earnerShareBps=Math.round(share*100);
+  }
+  const updated=await db.$transaction(async tx=>{
+   await tx.campaignRevision.create({data:{campaignId:current.id,version:current.version,snapshot:campaignSnapshot(current)}});
+   return tx.campaign.update({where:{id:current.id},data:{...data,version:{increment:1}}});
+  });
+  return json(res,200,updated);
+ }
+
  const pub=p.match(/^\/campaigns\/([^/]+)\/publish$/);
  if(m==="POST"&&pub){
   requireRole(session,"BUSINESS","ADMIN");
