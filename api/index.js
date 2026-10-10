@@ -280,11 +280,11 @@ module.exports=async(req,res)=>{try{
     if(reserved+1>=c.cap||c.availableQuantity!=null&&reservedUnits+quantity>=c.availableQuantity)await tx.campaign.update({where:{id:c.id},data:{status:"PAUSED"}});
     return order;
    });
-   return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
+   return json(res,201,{...o,customerConfirmationPath:"/order?token="+confirmToken});
   } catch(err) {
    if(err.code==="DUPLICATE_BUYER")return json(res,409,{error:"This customer already has an active or completed order"});
-   if(err.code==="CAMPAIGN_CAP")return json(res,409,{error:"Campaign sales cap reached"});
-   if(err.code==="CAMPAIGN_STOCK")return json(res,409,{error:"Not enough campaign quantity remains"});
+   if(err.code==="CAMPAIGN_CAP"){await db.campaign.update({where:{id:c.id},data:{status:"PAUSED"}}).catch(()=>{});return json(res,409,{error:"Campaign sales cap reached"})}
+   if(err.code==="CAMPAIGN_STOCK"){const used=await db.order.aggregate({_sum:{quantity:true},where:{campaignId:c.id,status:{notIn:["CANCELLED","RETURNED"]}}}).catch(()=>null);if((used?._sum?.quantity||0)>=Number(c.availableQuantity||Infinity))await db.campaign.update({where:{id:c.id},data:{status:"PAUSED"}}).catch(()=>{});return json(res,409,{error:"Not enough campaign quantity remains"})}
    throw err;
   }
  }
