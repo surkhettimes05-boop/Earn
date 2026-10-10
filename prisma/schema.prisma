@@ -144,6 +144,19 @@ model Campaign {
   successRule String
   mainImageData String?
   supportingImageData String[] @default([])
+  brandName String?
+  category String?
+  packSize String?
+  mrpPaisa BigInt?
+  description String?
+  sellingPoints String[] @default([])
+  whatsappPitch String?
+  customerOffer String?
+  faq Json?
+  serviceArea String?
+  availableQuantity Int?
+  deliveryInfo String?
+  campaignTerms String?
   createdAt   DateTime       @default(now())
   orders      Order[]
 }
