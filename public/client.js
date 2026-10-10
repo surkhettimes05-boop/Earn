@@ -18,6 +18,7 @@ window.EARN_API = (() => {
     signup:data=>request("/auth/signup",{method:"POST",body:JSON.stringify(data)}),
     me:()=>request("/me"),
     campaigns:()=>request("/campaigns"),
+    campaign:id=>request("/campaigns/"+encodeURIComponent(id)),
     startSale:campaignId=>request("/campaigns/"+encodeURIComponent(campaignId)+"/start",{method:"POST",body:"{}"}),
     createOrder:data=>request("/orders",{method:"POST",body:JSON.stringify(data)}),
     reissueBuyerLink:orderId=>request("/orders/"+encodeURIComponent(orderId)+"/reissue-confirmation",{method:"POST",body:"{}"}),
