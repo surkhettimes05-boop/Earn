@@ -23,6 +23,16 @@ const campaignImages=b=>{
  if((main?main.length:0)+supporting.reduce((n,x)=>n+x.length,0)>850000)throw Object.assign(new Error("Product images are too large. Choose smaller photos."),{status:413});
  return {mainImageData:main,supportingImageData:supporting};
 };
+const campaignMeta=b=>{
+ const points=Array.isArray(b.sellingPoints)?b.sellingPoints.map(x=>String(x||"").trim()).filter(Boolean):[];
+ const faq=Array.isArray(b.faq)?b.faq.filter(x=>x&&text(x.question,2,160)&&text(x.answer,2,500)).slice(0,6):[];
+ const available=Number(b.availableQuantity),mrp=Number(b.mrpNpr);
+ if(points.length<3||points.length>5||points.some(x=>x.length>180))throw Object.assign(new Error("Add 3–5 concise selling points"),{status:400});
+ if(!Number.isInteger(available)||available<1)throw Object.assign(new Error("Available quantity must be at least 1"),{status:400});
+ if(!text(b.brandName,2,80)||!text(b.category,2,60)||!text(b.packSize,1,60)||!text(b.description,10,800)||!text(b.serviceArea,2,120))throw Object.assign(new Error("Complete the brand, product and availability details"),{status:400});
+ if(!text(b.whatsappPitch,10,700)||!text(b.deliveryInfo,5,500)||!text(b.campaignTerms,5,1000))throw Object.assign(new Error("Complete the sales kit, delivery information and campaign terms"),{status:400});
+ return {brandName:b.brandName.trim(),category:b.category.trim(),packSize:b.packSize.trim(),mrpPaisa:Number.isFinite(mrp)&&mrp>0?BigInt(Math.round(mrp*100)):null,description:b.description.trim(),sellingPoints:points,whatsappPitch:b.whatsappPitch.trim(),customerOffer:text(b.customerOffer,2,500)?b.customerOffer.trim():null,faq,serviceArea:b.serviceArea.trim(),availableQuantity:available,deliveryInfo:b.deliveryInfo.trim(),campaignTerms:b.campaignTerms.trim()};
+};
 const publicUser=u=>({id:u.id,phone:u.phone,role:u.role,displayName:u.earner?.displayName||null,business:u.business?{id:u.business.id,name:u.business.name,verified:u.business.verified}:null});
 
 module.exports=async(req,res)=>{try{
@@ -54,8 +64,15 @@ module.exports=async(req,res)=>{try{
  }
 
  if(m==="GET"&&p==="/campaigns"){
-  const rows=await db.campaign.findMany({where:{status:"LIVE"},include:{business:{select:{name:true,verified:true}}},orderBy:{createdAt:"desc"}});
-  return json(res,200,rows);
+  const rows=await db.campaign.findMany({where:{status:"LIVE"},include:{business:{select:{name:true,verified:true}},orders:{where:{status:{notIn:["CANCELLED","RETURNED"]}},select:{quantity:true}}},orderBy:{createdAt:"desc"}});
+  return json(res,200,rows.map(({orders,...x})=>({...x,remainingQuantity:x.availableQuantity==null?null:Math.max(0,x.availableQuantity-orders.reduce((n,o)=>n+o.quantity,0))})));
+ }
+ const publicCampaign=p.match(/^\/campaigns\/([^/]+)$/);
+ if(m==="GET"&&publicCampaign){
+  const row=await db.campaign.findFirst({where:{id:publicCampaign[1],type:"ORDER",status:{in:["LIVE","PAUSED"]}},include:{business:{select:{name:true,verified:true}},orders:{where:{status:{notIn:["CANCELLED","RETURNED"]}},select:{quantity:true}}}});
+  if(!row)return json(res,404,{error:"Product not found"});
+  const {orders,...x}=row,used=orders.reduce((n,o)=>n+o.quantity,0);
+  return json(res,200,{...x,remainingQuantity:x.availableQuantity==null?null:Math.max(0,x.availableQuantity-used),soldOut:x.status==="PAUSED"||x.availableQuantity!=null&&used>=x.availableQuantity});
  }
 
  // Customer endpoints are intentionally public but protected by a high-entropy order token.
@@ -192,7 +209,8 @@ module.exports=async(req,res)=>{try{
    rewardPaisa=BigInt(Math.round(reward*100));
   }
   const images=b.type==="ORDER"?campaignImages(b):{mainImageData:null,supportingImageData:[]};
-  const row=await db.campaign.create({data:{businessId:biz.id,type:b.type,title:b.title.trim(),city:b.city.trim(),rewardPaisa,cap,successRule:b.successRule.trim(),status:"DRAFT",...commercial,...images}});
+  const meta=b.type==="ORDER"?campaignMeta(b):{};
+  const row=await db.campaign.create({data:{businessId:biz.id,type:b.type,title:b.title.trim(),city:b.city.trim(),rewardPaisa,cap,successRule:b.successRule.trim(),status:"DRAFT",...commercial,...images,...meta}});
   return json(res,201,row);
  }
 
@@ -206,7 +224,8 @@ module.exports=async(req,res)=>{try{
    const legacy=c.commissionBasis==="FIXED_ORDER"&&c.businessCommissionPaisa==null&&c.businessCommissionBps==null;
    const missingSplit=!Number.isInteger(c.earnerShareBps)||c.earnerShareBps<=0||c.earnerShareBps>10000;
    const missingTerms=c.commissionBasis==="PER_UNIT"&&(!c.unitPricePaisa||!c.unitLabel||!c.businessCommissionPaisa)||c.commissionBasis==="PERCENT_GMV"&&(!c.unitPricePaisa||!c.unitLabel||!c.businessCommissionBps)||c.commissionBasis==="FIXED_ORDER"&&!c.businessCommissionPaisa;
-   if(legacy||missingSplit||missingTerms)return json(res,409,{error:"This ORDER campaign has incomplete commission terms and cannot be published."});
+   const missingMarketplace=!c.brandName||!c.category||!c.packSize||!c.description||!c.serviceArea||!c.availableQuantity||c.sellingPoints.length<3||!c.whatsappPitch||!c.deliveryInfo||!c.campaignTerms;
+   if(legacy||missingSplit||missingTerms||missingMarketplace)return json(res,409,{error:"This ORDER campaign has incomplete product, availability or commission terms and cannot be published."});
   }
   return json(res,200,await db.campaign.update({where:{id:c.id},data:{status:"LIVE"}}));
  }
@@ -253,15 +272,19 @@ module.exports=async(req,res)=>{try{
     // one slot. Without this reservation, two new orders could both pass a reward-only
     // count before either has reached reward creation.
     const reserved=await tx.order.count({where:{campaignId:c.id,status:{notIn:["CANCELLED","RETURNED"]}}});
-    if(reserved>=c.cap){const err=new Error("CAMPAIGN_CAP");err.code="CAMPAIGN_CAP";throw err}
+    const unitAgg=await tx.order.aggregate({_sum:{quantity:true},where:{campaignId:c.id,status:{notIn:["CANCELLED","RETURNED"]}}}),reservedUnits=unitAgg._sum.quantity||0;
+    if(reserved>=c.cap){await tx.campaign.update({where:{id:c.id},data:{status:"PAUSED"}});const err=new Error("CAMPAIGN_CAP");err.code="CAMPAIGN_CAP";throw err}
+    if(c.availableQuantity!=null&&reservedUnits+quantity>c.availableQuantity){if(reservedUnits>=c.availableQuantity)await tx.campaign.update({where:{id:c.id},data:{status:"PAUSED"}});const err=new Error("CAMPAIGN_STOCK");err.code="CAMPAIGN_STOCK";throw err}
     const order=await tx.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
     await tx.orderEvent.create({data:{orderId:order.id,type:"ORDER_SUBMITTED",actorRole:"EARNER",actorId:session.sub}});
+    if(reserved+1>=c.cap||c.availableQuantity!=null&&reservedUnits+quantity>=c.availableQuantity)await tx.campaign.update({where:{id:c.id},data:{status:"PAUSED"}});
     return order;
    });
    return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
   } catch(err) {
    if(err.code==="DUPLICATE_BUYER")return json(res,409,{error:"This customer already has an active or completed order"});
-   if(err.code==="CAMPAIGN_CAP")return json(res,409,{error:"Campaign reward cap reached"});
+   if(err.code==="CAMPAIGN_CAP")return json(res,409,{error:"Campaign sales cap reached"});
+   if(err.code==="CAMPAIGN_STOCK")return json(res,409,{error:"Not enough campaign quantity remains"});
    throw err;
   }
  }
