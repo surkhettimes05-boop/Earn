@@ -33,6 +33,13 @@ const campaignMeta=b=>{
  if(!text(b.whatsappPitch,10,700)||!text(b.deliveryInfo,5,500)||!text(b.campaignTerms,5,1000))throw Object.assign(new Error("Complete the sales kit, delivery information and campaign terms"),{status:400});
  return {brandName:b.brandName.trim(),category:b.category.trim(),packSize:b.packSize.trim(),mrpPaisa:Number.isFinite(mrp)&&mrp>0?BigInt(Math.round(mrp*100)):null,description:b.description.trim(),sellingPoints:points,whatsappPitch:b.whatsappPitch.trim(),customerOffer:text(b.customerOffer,2,500)?b.customerOffer.trim():null,faq,serviceArea:b.serviceArea.trim(),availableQuantity:available,deliveryInfo:b.deliveryInfo.trim(),campaignTerms:b.campaignTerms.trim()};
 };
+const ORDER_RESERVATION_MINUTES=120;
+const notify=(tx,userId,type,title,message,orderId)=>tx.notification.create({data:{userId,type,title,message,orderId:orderId||null}});
+const expireReservations=async(tx,campaignId)=>{
+ const now=new Date();
+ await tx.order.updateMany({where:{campaignId,status:{in:["SUBMITTED","CUSTOMER_CONFIRMED"]},expiresAt:{lt:now}},data:{status:"CANCELLED",cancelledAt:now,cancelReason:"Reservation expired"}});
+};
+const campaignSnapshot=c=>({version:c.version,title:c.title,unitPricePaisa:String(c.unitPricePaisa||0),commissionBasis:c.commissionBasis,businessCommissionPaisa:c.businessCommissionPaisa==null?null:String(c.businessCommissionPaisa),businessCommissionBps:c.businessCommissionBps,earnerShareBps:c.earnerShareBps,unitLabel:c.unitLabel,customerOffer:c.customerOffer,campaignTerms:c.campaignTerms,deliveryInfo:c.deliveryInfo});
 const publicUser=u=>({id:u.id,phone:u.phone,role:u.role,displayName:u.earner?.displayName||null,business:u.business?{id:u.business.id,name:u.business.name,verified:u.business.verified}:null});
 
 module.exports=async(req,res)=>{try{
@@ -73,6 +80,36 @@ module.exports=async(req,res)=>{try{
   if(!row)return json(res,404,{error:"Product not found"});
   const {orders,...x}=row,used=orders.reduce((n,o)=>n+o.quantity,0);
   return json(res,200,{...x,remainingQuantity:x.availableQuantity==null?null:Math.max(0,x.availableQuantity-used),soldOut:x.status==="PAUSED"||x.availableQuantity!=null&&used>=x.availableQuantity});
+ }
+
+ // A shared product link is earner-bound by its attribution code. The customer
+ // creates the order directly; the business never chooses or replaces the earner.
+ if(m==="POST"&&p==="/customer/orders"){
+  const b=await body(req),ref=String(b.attributionCode||""),campaignId=String(b.campaignId||""),quantity=Number(b.quantity),phone=cleanPhone(b.customerPhone);
+  if(!text(ref,5,80)||!text(campaignId,5,100)||!text(b.customerName,2,80)||!validPhone(phone)||!Number.isInteger(quantity)||quantity<1||!text(b.deliveryLocation,3,300))return json(res,400,{error:"Complete name, Nepal mobile, quantity and delivery location"});
+  const a=await db.attribution.findUnique({where:{code:ref}});
+  if(!a||a.campaignId!==campaignId)return json(res,400,{error:"Invalid seller attribution"});
+  const token=crypto.randomBytes(24).toString("hex"),pin=String(crypto.randomInt(100000,1000000)),idempotencyKey=text(b.idempotencyKey,8,100)?b.idempotencyKey:"customer:"+crypto.randomUUID();
+  const result=await db.$transaction(async tx=>{
+   await tx.$queryRawUnsafe('SELECT id FROM "Campaign" WHERE id = $1 FOR UPDATE',campaignId);
+   await expireReservations(tx,campaignId);
+   const campaign=await tx.campaign.findFirst({where:{id:campaignId,type:"ORDER",status:"LIVE"}});
+   if(!campaign)throw Object.assign(new Error("This product is not currently available"),{status:409});
+   const duplicate=await tx.order.findFirst({where:{campaignId,customerPhoneHash:hashPhone(phone),status:{notIn:["CANCELLED","RETURNED"]}}});
+   if(duplicate)throw Object.assign(new Error("This customer already has an active order"),{status:409});
+   const active=await tx.order.findMany({where:{campaignId,status:{notIn:["CANCELLED","RETURNED"]}},select:{quantity:true}});
+   const used=active.reduce((n,o)=>n+o.quantity,0);
+   if(active.length>=campaign.cap||campaign.availableQuantity!=null&&used+quantity>campaign.availableQuantity)throw Object.assign(new Error("Not enough quantity remains"),{status:409});
+   const quote=commissionQuote(campaign,quantity),subtotal=BigInt(campaign.unitPricePaisa||0)*BigInt(quantity),expiresAt=new Date(Date.now()+ORDER_RESERVATION_MINUTES*60000);
+   const order=await tx.order.create({data:{campaignId,businessId:campaign.businessId,earnerId:a.earnerId,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:hashPhone(phone),deliveryLocation:b.deliveryLocation.trim(),customerConfirmTokenHash:hashSecret(token),customerConfirmedAt:new Date(),deliveryPinHash:hashSecret(pin),expiresAt,campaignVersionSnapshot:campaign.version,customerOfferSnapshot:campaign.customerOffer,campaignTermsSnapshot:campaign.campaignTerms,deliveryInfoSnapshot:campaign.deliveryInfo,product:campaign.title,quantity,status:"CUSTOMER_CONFIRMED",idempotencyKey,unitPricePaisaSnapshot:campaign.unitPricePaisa,commissionBasisSnapshot:campaign.commissionBasis,businessCommissionPaisaSnapshot:campaign.businessCommissionPaisa,businessCommissionBpsSnapshot:campaign.businessCommissionBps,earnerShareBpsSnapshot:campaign.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
+   await tx.orderEvent.create({data:{orderId:order.id,type:"CUSTOMER_ORDERED_FROM_SHARED_LINK",actorRole:"CUSTOMER",metadata:{attributionCode:a.code,campaignVersion:campaign.version,reservedUntil:expiresAt.toISOString()}}});
+   const biz=await tx.business.findUnique({where:{id:campaign.businessId}});
+   await notify(tx,a.earnerId,"CUSTOMER_ORDER","Customer placed an order",campaign.title+" × "+quantity,order.id);
+   if(biz)await notify(tx,biz.ownerId,"NEW_ORDER","New attributed order",campaign.title+" × "+quantity,order.id);
+   if(active.length+1>=campaign.cap||campaign.availableQuantity!=null&&used+quantity>=campaign.availableQuantity)await tx.campaign.update({where:{id:campaign.id},data:{status:"PAUSED"}});
+   return order;
+  });
+  return json(res,201,{id:result.id,status:result.status,orderPath:"/order?token="+token,deliveryPin:pin,expiresAt:result.expiresAt});
  }
 
  // Customer endpoints are intentionally public but protected by a high-entropy order token.
