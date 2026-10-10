@@ -15,6 +15,10 @@
 .image-note{font-size:12px;color:#667085;margin-top:7px}
 
 .market-card{padding:0;overflow:hidden}.market-body{padding:16px 18px 18px}.market-brand{font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}.market-price{font-weight:700}.market-earn{font-size:24px;color:var(--green);font-weight:800;margin:8px 0}.market-meta{display:flex;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--muted)}.gallery-main{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:16px;background:#eef1f5}.gallery-strip{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-top:8px}.gallery-strip button{padding:0;border:0;background:none}.gallery-strip img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:9px}.verified{color:var(--green);font-weight:700}.sales-points{padding-left:20px;line-height:1.65}.commission-box{background:var(--green2);border-radius:16px;padding:16px;margin:16px 0}.commission-box strong{display:block;font-size:25px;color:var(--green)}.sticky-action{position:sticky;bottom:72px;background:linear-gradient(transparent,var(--bg) 25%);padding-top:24px}.field textarea,.field select{min-height:52px;border:1px solid #A9B8B0;border-radius:12px;padding:12px 14px;font:16px inherit;color:var(--ink);background:white}.field textarea{min-height:100px;resize:vertical}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.preview-item{position:relative}.preview-item img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:9px}.preview-controls{display:flex;gap:3px;margin-top:4px}.preview-controls button{min-width:28px;height:28px;border:1px solid var(--border);border-radius:7px;background:white}.faq-row{display:grid;gap:6px;margin:10px 0}.public-product{max-width:560px;margin:auto}.offer{background:var(--amber2);border-radius:14px;padding:14px;margin:14px 0}
+[hidden]{display:none!important}
+.stepbar{display:flex;gap:6px;margin:6px 0 10px}.stepbar span{flex:1;height:4px;border-radius:2px;background:var(--border)}.stepbar span.on{background:var(--green)}
+.kit{margin-top:18px;border:1px solid var(--border);border-radius:12px;padding:0 14px;background:var(--white)}.kit summary{cursor:pointer;padding:14px 0;font-weight:700}.kit[open] summary{border-bottom:1px solid var(--border);margin-bottom:6px}
+.kit .field input{margin-bottom:6px}
 </style></head><body><main id="app" class="app"></main><nav id="bottom" class="bottom" hidden></nav>
 <script src="/public/strings.js"></script><script src="/public/client.js"></script><script>
 const S=window.EARN_STRINGS,A=window.EARN_API,app=document.querySelector("#app"),bottom=document.querySelector("#bottom");
@@ -60,14 +64,136 @@ function campaignStatus(s){return ({LIVE:S.live,DRAFT:S.draft,PAUSED:S.paused,CL
 function renderCampaignList(rows){state.businessCampaignRows=rows;const x=document.querySelector("#campaignList");x.innerHTML=rows.length?rows.map(c=>'<div class="card"><h3>'+esc(c.title)+'</h3><span class="chip">'+esc(campaignStatus(c.status))+'</span><p class="muted">'+S.price+': Rs '+npr(c.unitPricePaisa)+' · Version '+esc(c.version||1)+'</p><button class="smallbtn edit-campaign" data-edit="'+esc(c.id)+'">Edit campaign</button></div>').join(""):'<div class="empty">'+S.noCampaigns+'</div>';document.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>renderCampaignEdit(rows.find(c=>c.id===b.dataset.edit)))}
 function renderCampaignEdit(c){const x=document.querySelector("#campaignForm");x.innerHTML='<form id="campaignEditForm" class="card"><h2>Edit '+esc(c.title)+'</h2><p class="hint">Content and availability can change normally. Economic changes require an explicit new version so existing orders keep their original snapshots.</p><div class="field"><label>Description</label><textarea name="description" required>'+esc(c.description||"")+'</textarea></div><div class="field"><label>Available quantity</label><input name="availableQuantity" type="number" min="1" value="'+esc(c.availableQuantity||1)+'" required></div><div class="field"><label>WhatsApp pitch</label><textarea name="whatsappPitch" required>'+esc(c.whatsappPitch||"")+'</textarea></div><div class="field"><label>Customer offer</label><textarea name="customerOffer">'+esc(c.customerOffer||"")+'</textarea></div><div class="field"><label>Delivery information</label><textarea name="deliveryInfo" required>'+esc(c.deliveryInfo||"")+'</textarea></div><div class="field"><label>Campaign terms</label><textarea name="campaignTerms" required>'+esc(c.campaignTerms||"")+'</textarea></div><div id="editError"></div><button class="btn primary">Save changes as version '+((c.version||1)+1)+'</button></form>';document.querySelector("#campaignEditForm").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.currentTarget),er=document.querySelector("#editError");try{await A.editCampaign(c.id,{description:f.get("description"),availableQuantity:Number(f.get("availableQuantity")),whatsappPitch:f.get("whatsappPitch"),customerOffer:f.get("customerOffer"),deliveryInfo:f.get("deliveryInfo"),campaignTerms:f.get("campaignTerms")});x.innerHTML='<div class="trust">Campaign updated. Existing orders kept their original terms.</div>';renderCampaignList(await A.businessCampaigns())}catch(z){er.className="error";er.textContent=plainError(z.message)}}}
 
-function renderCampaignForm(){state.businessShare=70;state.campaignImageFiles=[];const x=document.querySelector("#campaignForm");x.innerHTML='<form id="campaignFormEl" class="card"><h2>'+S.newCampaign+'</h2><div class="form-grid"><div class="field"><label>Brand name</label><input name="brandName" required></div><div class="field"><label>Product name</label><input name="productName" required minlength="3"></div></div><div class="form-grid"><div class="field"><label>Category</label><input name="category" required placeholder="Rice"></div><div class="field"><label>Pack size / unit</label><input name="packSize" required placeholder="25 kg bag"></div></div><div class="field"><label>Short description</label><textarea name="description" required minlength="10"></textarea></div><div class="field image-picker"><label for="productImages">Product photos</label><input id="productImages" type="file" accept="image/jpeg,image/png,image/webp" multiple><div class="image-note">Up to 5 photos. First is the cover. Use arrows to reorder or × to remove.</div><div class="image-previews" id="imagePreviews"></div></div><div class="form-grid"><div class="field"><label>Selling price (NPR)</label><input name="unitPrice" type="number" min=".01" step=".01" required></div><div class="field"><label>MRP (NPR)</label><input name="mrp" type="number" min=".01" step=".01"></div></div><div class="form-grid"><div class="field"><label>Unit name</label><input name="unitLabel" required placeholder="bag"></div><div class="field"><label>Available quantity</label><input name="availableQuantity" type="number" min="1" step="1" required></div></div><div class="field"><label>Service area</label><input name="serviceArea" required placeholder="Birendranagar, Surkhet"></div><div class="field"><label>Commission paid by business per unit (NPR)</label><input id="commission" name="commission" type="number" min=".01" step=".01" required></div><div class="field"><label>'+S.earnerShare+'</label><div class="share-chips">'+[60,70,80].map(n=>'<button type="button" data-share="'+n+'" aria-pressed="'+(n===70)+'">'+n+'%</button>').join("")+'</div></div><div class="earnbox"><div class="splitbar"><span id="splitFill" style="width:70%"></span></div><div class="splitnums"><span id="earnerSplit">'+S.earnerGets+' Rs 0</span><span id="earnSplit">'+S.earnGets+' Rs 0</span></div></div><h3>Earner sales kit</h3>'+[1,2,3,4,5].map((n,i)=>'<div class="field"><label>Selling point '+n+(i<3?' *':'')+'</label><input name="point'+n+'" '+(i<3?'required':'')+' maxlength="180"></div>').join("")+'<div class="field"><label>Ready-made WhatsApp pitch</label><textarea name="whatsappPitch" required></textarea></div><div class="field"><label>Customer offer (optional)</label><textarea name="customerOffer"></textarea></div><div class="field"><label>FAQ 1 — question</label><input name="faqQ1"></div><div class="field"><label>FAQ 1 — answer</label><textarea name="faqA1"></textarea></div><div class="field"><label>FAQ 2 — question</label><input name="faqQ2"></div><div class="field"><label>FAQ 2 — answer</label><textarea name="faqA2"></textarea></div><div class="field"><label>Delivery information</label><textarea name="deliveryInfo" required></textarea></div><div class="field"><label>Campaign terms</label><textarea name="campaignTerms" required></textarea></div><div id="campaignError" role="alert"></div><button class="btn primary" id="publishBtn">'+S.publishCampaign+'</button></form>';document.querySelectorAll("[data-share]").forEach(b=>b.onclick=()=>{state.businessShare=Number(b.dataset.share);document.querySelectorAll("[data-share]").forEach(x=>x.setAttribute("aria-pressed",x===b));updateSplit()});document.querySelector("#commission").oninput=updateSplit;document.querySelector("#productImages").onchange=e=>{const add=[...e.target.files];state.campaignImageFiles=[...(state.campaignImageFiles||[]),...add].slice(0,5);e.target.value="";renderCampaignImagePreviews()};document.querySelector("#campaignFormEl").onsubmit=publishBusinessCampaign;updateSplit()}
+/* ---- Simple campaign flow: 2 short steps, everything else auto-filled (editable) ---- */
+function campaignMoney(n){return "Rs "+npr(Math.round(Number(n||0)*100))}
+function campaignText(f,n){return String(f.get(n)||"").trim()}
+function campaignBasics(f){
+  const v={product:campaignText(f,"productName"),brand:campaignText(f,"brandName"),unit:campaignText(f,"unitLabel"),area:campaignText(f,"serviceArea"),price:Number(f.get("unitPrice")),qty:Number(f.get("availableQuantity"))};
+  if(v.product.length<3)return {field:"productName",error:"Enter the product name (at least 3 letters)."};
+  if(v.brand.length<2)return {field:"brandName",error:"Enter the brand name."};
+  if(!v.unit)return {field:"unitLabel",error:"Enter what one unit is, for example carton or 25 kg bag."};
+  if(!(v.price>0))return {field:"unitPrice",error:"Enter the selling price for one unit."};
+  if(!Number.isInteger(v.qty)||v.qty<1)return {field:"availableQuantity",error:"Enter how many units you can supply (a whole number)."};
+  if(v.area.length<2)return {field:"serviceArea",error:"Enter the area where you can deliver."};
+  return {v}
+}
+function campaignKitDefaults(v){
+  return {
+    description:v.brand+" "+v.product+", sold per "+v.unit+" at "+campaignMoney(v.price)+". Available for delivery in "+v.area+".",
+    whatsappPitch:v.product+" by "+v.brand+": "+campaignMoney(v.price)+" per "+v.unit+", delivered in "+v.area+". Order here:",
+    deliveryInfo:"Delivered within "+v.area+". Check the quantity you receive and confirm it with your delivery PIN.",
+    campaignTerms:"Commission is paid per unit, only for the quantity the buyer confirms at delivery. Price and commission are fixed when an order is placed.",
+    points:[v.product+" by "+v.brand+", sold per "+v.unit,"Price: "+campaignMoney(v.price)+" per "+v.unit,"Delivered in "+v.area]
+  }
+}
+function fillCampaignKit(v){
+  const k=campaignKitDefaults(v),form=document.querySelector("#campaignFormEl"),set=(n,val)=>{const el=form.elements[n];if(el&&!el.dataset.touched)el.value=val};
+  set("description",k.description);set("whatsappPitch",k.whatsappPitch);set("deliveryInfo",k.deliveryInfo);set("campaignTerms",k.campaignTerms);
+  k.points.forEach((p,i)=>set("point"+(i+1),p));
+  const pack=form.elements.packSize;if(pack&&!pack.dataset.touched)pack.value=v.unit
+}
+function showCampaignStep(n){
+  document.querySelector("#stepProduct").hidden=n!==1;
+  document.querySelector("#stepCommission").hidden=n!==2;
+  document.querySelectorAll("#stepBar span").forEach((s,i)=>s.classList.toggle("on",i<n));
+  document.querySelector("#stepHint").textContent=n===1?"Step 1 of 2: the product. Takes about a minute.":"Step 2 of 2: your commission.";
+  document.querySelector("#campaignFormEl").scrollIntoView({block:"start"})
+}
+function campaignError(step,field,msg){
+  showCampaignStep(step);
+  const el=document.querySelector(step===1?"#errProduct":"#errCommission");el.className="error";el.textContent=msg;
+  const input=document.querySelector("#campaignFormEl").elements[field];if(input)input.focus()
+}
+function refreshCommissionHint(){
+  const form=document.querySelector("#campaignFormEl");if(!form)return;
+  const f=new FormData(form),price=Number(f.get("unitPrice")),qty=Number(f.get("availableQuantity")),c=Number(f.get("commission")),el=document.querySelector("#commissionHint");
+  if(!(c>0)||!(price>0)){el.textContent="Enter the amount you pay for each unit sold.";return}
+  if(c>=price){el.textContent="Commission must be less than the selling price ("+campaignMoney(price)+").";return}
+  const n=Math.max(1,Math.min(20,Number.isInteger(qty)&&qty>0?qty:20)),pct=Math.round(c/price*1000)/10;
+  el.textContent="That is "+pct+"% of the price. If "+n+" units are delivered: buyers pay "+campaignMoney(price*n)+", commission is "+campaignMoney(c*n)+", you receive "+campaignMoney((price-c)*n)+"."
+}
+function renderCampaignForm(){
+  state.businessShare=70;state.campaignImageFiles=[];state.draftId=null;
+  const last=(state.businessCampaignRows||[])[0]||{},x=document.querySelector("#campaignForm");
+  if([60,70,80].includes(Math.round((last.earnerShareBps||0)/100)))state.businessShare=Math.round(last.earnerShareBps/100);
+  const field=(label,name,attrs,hint)=>{const id=name==="commission"?"commission":"f_"+name;return '<div class="field"><label for="'+id+'">'+label+'</label><input id="'+id+'" name="'+name+'" '+attrs+'>'+(hint?'<span class="hint">'+hint+'</span>':'')+'</div>'};
+  const text=(label,name,rows)=>'<div class="field"><label for="f_'+name+'">'+label+'</label><textarea id="f_'+name+'" name="'+name+'" rows="'+(rows||3)+'" data-kit></textarea></div>';
+  x.innerHTML='<form id="campaignFormEl" class="card" novalidate>'
+   +'<h2>'+S.newCampaign+'</h2><div class="stepbar" id="stepBar"><span class="on"></span><span></span></div><p class="hint" id="stepHint"></p>'
+   +'<div id="stepProduct">'
+   +field("Product name","productName",'required maxlength="100" placeholder="Wai Wai noodles" autocomplete="off"')
+   +field("Brand","brandName",'required maxlength="80" autocomplete="off" value="'+esc(last.brandName||"")+'"')
+   +'<div class="form-grid">'+field("One unit is a","unitLabel",'required maxlength="30" placeholder="carton" autocomplete="off"')
+   +field("Price per unit (NPR)","unitPrice",'type="number" inputmode="decimal" min="0.01" step="0.01" required')+'</div>'
+   +'<div class="form-grid">'+field("Units you can supply","availableQuantity",'type="number" inputmode="numeric" min="1" step="1" required')
+   +field("Where you deliver","serviceArea",'required maxlength="80" placeholder="Birendranagar, Surkhet" autocomplete="off" value="'+esc(last.serviceArea||"")+'"')+'</div>'
+   +'<div class="field image-picker"><label for="productImages">Product photo (optional)</label><input id="productImages" type="file" accept="image/jpeg,image/png,image/webp" multiple><div class="image-note">Up to 5 photos. The first is the cover. Use the arrows to reorder or × to remove.</div><div class="image-previews" id="imagePreviews"></div></div>'
+   +'<div id="errProduct" role="alert"></div><button type="button" class="btn primary" id="toCommission">Next: set your commission</button></div>'
+   +'<div id="stepCommission" hidden>'
+   +'<button type="button" class="back" id="stepBack">← Back to product</button>'
+   +field("Commission you pay per unit sold (NPR)","commission",'type="number" inputmode="decimal" min="0.01" step="0.01" required')
+   +'<p class="hint" id="commissionHint"></p>'
+   +'<div class="field"><label>'+S.earnerShare+'</label><div class="share-chips">'+[60,70,80].map(n=>'<button type="button" data-share="'+n+'" aria-pressed="'+(n===state.businessShare)+'">'+n+'%</button>').join("")+'</div></div>'
+   +'<div class="earnbox"><div class="splitbar"><span id="splitFill" style="width:'+state.businessShare+'%"></span></div><div class="splitnums"><span id="earnerSplit">'+S.earnerGets+' Rs 0</span><span id="earnSplit">'+S.earnGets+' Rs 0</span></div></div>'
+   +'<details class="kit"><summary>Details earners and buyers will see (already filled in, edit if you like)</summary>'
+   +'<div class="field"><label for="f_category">Category</label><select id="f_category" name="category">'+["General","Food and grocery","Beverages","Household","Personal care","Agriculture","Other"].map(c=>'<option>'+c+'</option>').join("")+'</select></div>'
+   +field("Pack size","packSize",'maxlength="60" data-kit')
+   +text("Description","description",3)
+   +'<div class="field"><label>Selling points</label><span class="hint">Add one real reason buyers choose this product. It helps earners sell.</span>'+[1,2,3].map(n=>'<input name="point'+n+'" maxlength="180" aria-label="Selling point '+n+'" data-kit>').join("")+'</div>'
+   +text("WhatsApp message earners can send","whatsappPitch",3)
+   +text("Offer for buyers (optional)","customerOffer",2)
+   +text("Delivery information","deliveryInfo",2)
+   +text("Campaign terms","campaignTerms",3)
+   +'</details>'
+   +'<div id="errCommission" role="alert"></div><button class="btn primary" id="publishBtn" style="margin-top:18px">'+S.publishCampaign+'</button></div></form>';
+  const form=document.querySelector("#campaignFormEl");
+  form.querySelectorAll("[data-kit]").forEach(el=>el.addEventListener("input",()=>{el.dataset.touched="1"}));
+  form.addEventListener("input",()=>{state.draftId=null});
+  document.querySelectorAll("[data-share]").forEach(b=>b.onclick=()=>{state.businessShare=Number(b.dataset.share);document.querySelectorAll("[data-share]").forEach(y=>y.setAttribute("aria-pressed",y===b));updateSplit()});
+  document.querySelector("#commission").addEventListener("input",()=>{updateSplit();refreshCommissionHint()});
+  document.querySelector("#productImages").onchange=e=>{const add=[...e.target.files];state.campaignImageFiles=[...(state.campaignImageFiles||[]),...add].slice(0,5);e.target.value="";renderCampaignImagePreviews()};
+  document.querySelector("#toCommission").onclick=goToCommission;
+  document.querySelector("#stepBack").onclick=()=>showCampaignStep(1);
+  form.onsubmit=e=>{if(!document.querySelector("#stepProduct").hidden){e.preventDefault();goToCommission()}else publishBusinessCampaign(e)};
+  showCampaignStep(1);updateSplit();refreshCommissionHint()
+}
+function goToCommission(){
+  const form=document.querySelector("#campaignFormEl"),b=campaignBasics(new FormData(form));
+  document.querySelector("#errProduct").textContent="";document.querySelector("#errProduct").className="";
+  if(b.error)return campaignError(1,b.field,b.error);
+  fillCampaignKit(b.v);showCampaignStep(2);refreshCommissionHint();form.elements.commission.focus()
+}
 function renderCampaignImagePreviews(){const box=document.querySelector("#imagePreviews"),files=state.campaignImageFiles||[];if(!box)return;box.innerHTML=files.map((f,i)=>'<div class="preview-item"><img src="'+URL.createObjectURL(f)+'" alt="'+(i===0?'Main photo':'Supporting photo')+'"><div class="preview-controls"><button type="button" data-img-left="'+i+'" '+(i===0?'disabled':'')+'>←</button><button type="button" data-img-remove="'+i+'">×</button><button type="button" data-img-right="'+i+'" '+(i===files.length-1?'disabled':'')+'>→</button></div></div>').join("");document.querySelectorAll("[data-img-remove]").forEach(b=>b.onclick=()=>{state.campaignImageFiles.splice(Number(b.dataset.imgRemove),1);renderCampaignImagePreviews()});document.querySelectorAll("[data-img-left]").forEach(b=>b.onclick=()=>moveCampaignImage(Number(b.dataset.imgLeft),-1));document.querySelectorAll("[data-img-right]").forEach(b=>b.onclick=()=>moveCampaignImage(Number(b.dataset.imgRight),1))}
 function moveCampaignImage(i,d){const j=i+d,a=state.campaignImageFiles;if(j<0||j>=a.length)return;[a[i],a[j]]=[a[j],a[i]];renderCampaignImagePreviews()}
 function compressCampaignImage(file){return new Promise((resolve,reject)=>{if(!/^image\/(jpeg|png|webp)$/.test(file.type))return reject(new Error("Use JPG, PNG or WebP images"));const img=new Image(),u=URL.createObjectURL(file);img.onload=()=>{URL.revokeObjectURL(u);const max=1000,scale=Math.min(1,max/Math.max(img.width,img.height)),w=Math.max(1,Math.round(img.width*scale)),h=Math.max(1,Math.round(img.height*scale)),cv=document.createElement("canvas");cv.width=w;cv.height=h;cv.getContext("2d").drawImage(img,0,0,w,h);let quality=.76,data=cv.toDataURL("image/jpeg",quality);while(data.length>170000&&quality>.36){quality-=.08;data=cv.toDataURL("image/jpeg",quality)}if(data.length>180000)return reject(new Error("One photo is still too large. Choose a smaller image."));resolve(data)};img.onerror=()=>{URL.revokeObjectURL(u);reject(new Error("Could not read that image"))};img.src=u})}
 async function selectedCampaignImages(){const files=state.campaignImageFiles||[];if(files.length>5)throw new Error("Choose at most 5 product photos");const data=[];for(const f of files)data.push(await compressCampaignImage(f));return {mainImageData:data[0]||null,supportingImageData:data.slice(1)}}
 function splitQuote(nprValue,share){const total=BigInt(Math.round(Number(nprValue||0)*100)),bps=BigInt(share*100),earner=(total*bps+5000n)/10000n;return {earner:Number(earner),earn:Number(total-earner)}}
 function updateSplit(){const q=splitQuote(document.querySelector("#commission")?.value||0,state.businessShare||70);document.querySelector("#splitFill").style.width=(state.businessShare||70)+"%";document.querySelector("#earnerSplit").textContent=S.earnerGets+" Rs "+npr(q.earner);document.querySelector("#earnSplit").textContent=S.earnGets+" Rs "+npr(q.earn)}
-async function publishBusinessCampaign(e){e.preventDefault();const f=new FormData(e.currentTarget),btn=document.querySelector("#publishBtn"),er=document.querySelector("#campaignError");btn.disabled=true;btn.textContent=S.publishingCampaign;er.innerHTML="";try{const images=await selectedCampaignImages(),points=[1,2,3,4,5].map(n=>f.get("point"+n)).filter(x=>String(x||"").trim()),faq=[1,2].map(n=>({question:f.get("faqQ"+n),answer:f.get("faqA"+n)})).filter(x=>String(x.question||"").trim()&&String(x.answer||"").trim()),available=Number(f.get("availableQuantity"));const draft=await A.createCampaign({type:"ORDER",title:f.get("productName"),brandName:f.get("brandName"),category:f.get("category"),packSize:f.get("packSize"),description:f.get("description"),city:f.get("serviceArea"),serviceArea:f.get("serviceArea"),successRule:"Buyer confirms delivered quantity",cap:Math.max(1,available),availableQuantity:available,commissionBasis:"PER_UNIT",unitPriceNpr:Number(f.get("unitPrice")),mrpNpr:Number(f.get("mrp")||0),businessCommissionNpr:Number(f.get("commission")),earnerSharePercent:state.businessShare||70,unitLabel:f.get("unitLabel"),sellingPoints:points,whatsappPitch:f.get("whatsappPitch"),customerOffer:f.get("customerOffer"),faq,deliveryInfo:f.get("deliveryInfo"),campaignTerms:f.get("campaignTerms"),...images});await A.publishCampaign(draft.id);state.campaignImageFiles=[];document.querySelector("#campaignForm").innerHTML='<div class="trust">'+S.campaignPublished+'</div>';renderCampaignList(await A.businessCampaigns())}catch(x){er.className="error";er.textContent=plainError(x.message);btn.disabled=false;btn.textContent=S.publishCampaign}}
+async function publishBusinessCampaign(e){
+  e.preventDefault();
+  const form=document.querySelector("#campaignFormEl"),f=new FormData(form),btn=document.querySelector("#publishBtn"),er=document.querySelector("#errCommission");
+  er.className="";er.textContent="";
+  const b=campaignBasics(f);if(b.error)return campaignError(1,b.field,b.error);
+  const v=b.v,c=Number(f.get("commission"));
+  if(!(c>0))return campaignError(2,"commission","Enter the commission you pay for each unit sold.");
+  if(c>=v.price)return campaignError(2,"commission","Commission must be less than the selling price ("+campaignMoney(v.price)+").");
+  const k=campaignKitDefaults(v),pick=(n,d)=>campaignText(f,n)||d;
+  btn.disabled=true;btn.textContent=S.publishingCampaign;
+  try{
+    if(!state.draftId){
+      const images=await selectedCampaignImages();
+      const draft=await A.createCampaign({type:"ORDER",title:v.product,brandName:v.brand,category:pick("category","General"),packSize:pick("packSize",v.unit),description:pick("description",k.description),city:v.area,serviceArea:v.area,successRule:"Buyer confirms delivered quantity",cap:Math.max(1,v.qty),availableQuantity:v.qty,commissionBasis:"PER_UNIT",unitPriceNpr:v.price,mrpNpr:0,businessCommissionNpr:c,earnerSharePercent:state.businessShare||70,unitLabel:v.unit,sellingPoints:[1,2,3].map(n=>pick("point"+n,k.points[n-1])),whatsappPitch:pick("whatsappPitch",k.whatsappPitch),customerOffer:campaignText(f,"customerOffer"),faq:[],deliveryInfo:pick("deliveryInfo",k.deliveryInfo),campaignTerms:pick("campaignTerms",k.campaignTerms),...images});
+      state.draftId=draft.id
+    }
+    await A.publishCampaign(state.draftId);
+    state.draftId=null;state.campaignImageFiles=[];
+    document.querySelector("#campaignForm").innerHTML='<div class="trust">'+S.campaignPublished+'</div>';
+    renderCampaignList(await A.businessCampaigns())
+  }catch(x){
+    er.className="error";er.textContent=plainError(x.message)+(state.draftId?" Your campaign is saved as a draft. Tap Publish to try again.":"");
+    btn.disabled=false;btn.textContent=S.publishCampaign
+  }
+}
 async function businessOrdersScreen(){const v=document.querySelector("#view");v.innerHTML='<h1 class="page-title">'+S.incomingOrders+'</h1>';try{const rows=await A.businessOrders();state.trackerOrders=rows;if(state.trackerOrder){const fresh=rows.find(o=>o.id===state.trackerOrder.id);if(fresh)state.trackerOrder=fresh;return renderTracker(v,state.trackerOrder)}if(!rows.length){v.innerHTML+='<div class="empty">'+S.noBusinessOrders+'</div>';return}v.innerHTML+=rows.map(o=>'<div class="card order"><h3>'+esc(o.product)+'</h3><span class="chip">'+esc(statusText(o.status))+'</span><p class="muted">'+S.quantity+': '+esc(o.quantity)+'</p><div class="order-actions">'+(o.status==="CUSTOMER_CONFIRMED"?'<button class="smallbtn biz-accept" data-id="'+esc(o.id)+'">'+S.accept+'</button><button class="smallbtn biz-decline" data-id="'+esc(o.id)+'">'+S.decline+'</button>':o.status==="PAID"?'<button class="smallbtn biz-ready" data-id="'+esc(o.id)+'">'+S.readyPickup+'</button>':'')+'<button class="smallbtn biz-track" data-id="'+esc(o.id)+'">'+S.trackOrder+'</button></div></div>').join("");document.querySelectorAll(".biz-accept").forEach(b=>b.onclick=()=>businessAccept(b.dataset.id,b));document.querySelectorAll(".biz-decline").forEach(b=>b.onclick=()=>businessDecline(b.dataset.id,b));document.querySelectorAll(".biz-ready").forEach(b=>b.onclick=()=>businessReady(b.dataset.id,b));document.querySelectorAll(".biz-track").forEach(b=>b.onclick=()=>{state.trackerOrder=rows.find(o=>o.id===b.dataset.id);renderTracker(v,state.trackerOrder)})}catch(e){showLoadError(v,e)}}
 async function businessAccept(id,b){b.disabled=true;b.textContent=S.accepting;try{const o=state.trackerOrders.find(x=>x.id===id);await A.acceptOrder(id,o.quantity);businessOrdersScreen()}catch(e){alert(plainError(e.message));b.disabled=false;b.textContent=S.accept}}
 async function businessDecline(id,b){const reason=prompt(S.declineReason,S.declineDefault);if(!reason)return;b.disabled=true;b.textContent=S.declining;try{await A.declineOrder(id,reason);businessOrdersScreen()}catch(e){alert(plainError(e.message));b.disabled=false;b.textContent=S.decline}}
