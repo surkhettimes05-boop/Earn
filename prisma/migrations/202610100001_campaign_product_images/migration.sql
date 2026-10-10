@@ -20,7 +20,8 @@ ADD CONSTRAINT "Campaign_availableQuantity_nonnegative"
 CHECK ("availableQuantity" IS NULL OR "availableQuantity" >= 0);
 
 ALTER TABLE "Campaign"
-ADD COLUMN "version" INTEGER NOT NULL DEFAULT 1;
+ADD COLUMN "version" INTEGER NOT NULL DEFAULT 1,
+ADD COLUMN "autoPaused" BOOLEAN NOT NULL DEFAULT false;
 
 ALTER TABLE "Order"
 ADD COLUMN "deliveryLocation" TEXT,
