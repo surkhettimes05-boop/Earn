@@ -15,6 +15,34 @@ const validPhone=p=>/^9779[678]\d{8}$/.test(p)||/^9[678]\d{8}$/.test(p);
 const hashPhone=p=>crypto.createHash("sha256").update(cleanPhone(p)).digest("hex");
 const text=(v,min,max)=>typeof v==="string"&&v.trim().length>=min&&v.trim().length<=max;
 const hashSecret=v=>crypto.createHash("sha256").update(String(v)).digest("hex");
+const validImageData=v=>typeof v==="string"&&/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(v)&&v.length<=180000;
+const campaignImages=b=>{
+ const main=b.mainImageData||null,supporting=Array.isArray(b.supportingImageData)?b.supportingImageData:[];
+ if(main&&!validImageData(main))throw Object.assign(new Error("Main image must be JPG, PNG or WebP and under the upload limit"),{status:400});
+ if(supporting.length>4||supporting.some(x=>!validImageData(x)))throw Object.assign(new Error("Add no more than 4 supporting JPG, PNG or WebP images"),{status:400});
+ if((main?main.length:0)+supporting.reduce((n,x)=>n+x.length,0)>850000)throw Object.assign(new Error("Product images are too large. Choose smaller photos."),{status:413});
+ return {mainImageData:main,supportingImageData:supporting};
+};
+const campaignMeta=b=>{
+ const points=Array.isArray(b.sellingPoints)?b.sellingPoints.map(x=>String(x||"").trim()).filter(Boolean):[];
+ const faq=Array.isArray(b.faq)?b.faq.filter(x=>x&&text(x.question,2,160)&&text(x.answer,2,500)).slice(0,6):[];
+ const available=Number(b.availableQuantity),mrp=Number(b.mrpNpr);
+ if(points.length<3||points.length>5||points.some(x=>x.length>180))throw Object.assign(new Error("Add 3–5 concise selling points"),{status:400});
+ if(!Number.isInteger(available)||available<1)throw Object.assign(new Error("Available quantity must be at least 1"),{status:400});
+ if(!text(b.brandName,2,80)||!text(b.category,2,60)||!text(b.packSize,1,60)||!text(b.description,10,800)||!text(b.serviceArea,2,120))throw Object.assign(new Error("Complete the brand, product and availability details"),{status:400});
+ if(!text(b.whatsappPitch,10,700)||!text(b.deliveryInfo,5,500)||!text(b.campaignTerms,5,1000))throw Object.assign(new Error("Complete the sales kit, delivery information and campaign terms"),{status:400});
+ return {brandName:b.brandName.trim(),category:b.category.trim(),packSize:b.packSize.trim(),mrpPaisa:Number.isFinite(mrp)&&mrp>0?BigInt(Math.round(mrp*100)):null,description:b.description.trim(),sellingPoints:points,whatsappPitch:b.whatsappPitch.trim(),customerOffer:text(b.customerOffer,2,500)?b.customerOffer.trim():null,faq,serviceArea:b.serviceArea.trim(),availableQuantity:available,deliveryInfo:b.deliveryInfo.trim(),campaignTerms:b.campaignTerms.trim()};
+};
+const ORDER_RESERVATION_MINUTES=120;
+const notify=(tx,userId,type,title,message,orderId)=>tx.notification.create({data:{userId,type,title,message,orderId:orderId||null}});
+const expireReservations=async(tx,campaignId)=>{
+ const now=new Date();
+ const expired=await tx.order.updateMany({where:{campaignId,status:{in:["SUBMITTED","CUSTOMER_CONFIRMED"]},expiresAt:{lt:now}},data:{status:"CANCELLED",cancelledAt:now,cancelReason:"Reservation expired"}});
+ if(expired.count){const campaign=await tx.campaign.findUnique({where:{id:campaignId}});if(campaign?.autoPaused)await tx.campaign.update({where:{id:campaignId},data:{status:"LIVE",autoPaused:false}})}
+};
+const campaignSnapshot=c=>({version:c.version,title:c.title,unitPricePaisa:String(c.unitPricePaisa||0),commissionBasis:c.commissionBasis,businessCommissionPaisa:c.businessCommissionPaisa==null?null:String(c.businessCommissionPaisa),businessCommissionBps:c.businessCommissionBps,earnerShareBps:c.earnerShareBps,unitLabel:c.unitLabel,customerOffer:c.customerOffer,campaignTerms:c.campaignTerms,deliveryInfo:c.deliveryInfo});
+const marketplaceReady=c=>c.type==="ORDER"&&!!c.brandName&&!!c.category&&!!c.packSize&&!!c.description&&!!c.serviceArea&&Number.isInteger(c.availableQuantity)&&c.availableQuantity>0&&Array.isArray(c.sellingPoints)&&c.sellingPoints.length>=3&&!!c.whatsappPitch&&!!c.deliveryInfo&&!!c.campaignTerms&&!!c.unitPricePaisa&&!!c.unitLabel&&((c.commissionBasis==="PER_UNIT"&&!!c.businessCommissionPaisa)||(c.commissionBasis==="PERCENT_GMV"&&!!c.businessCommissionBps)||(c.commissionBasis==="FIXED_ORDER"&&!!c.businessCommissionPaisa));
+const reservationExpired=o=>o.expiresAt&&o.expiresAt.getTime()<=Date.now();
 const publicUser=u=>({id:u.id,phone:u.phone,role:u.role,displayName:u.earner?.displayName||null,business:u.business?{id:u.business.id,name:u.business.name,verified:u.business.verified}:null});
 
 module.exports=async(req,res)=>{try{
@@ -46,8 +74,47 @@ module.exports=async(req,res)=>{try{
  }
 
  if(m==="GET"&&p==="/campaigns"){
-  const rows=await db.campaign.findMany({where:{status:"LIVE"},include:{business:{select:{name:true,verified:true}}},orderBy:{createdAt:"desc"}});
-  return json(res,200,rows);
+  const now=new Date(),activeWhere={status:{notIn:["CANCELLED","RETURNED"]},OR:[{expiresAt:null},{expiresAt:{gt:now}},{status:{notIn:["SUBMITTED","CUSTOMER_CONFIRMED"]}}]};
+  const rows=await db.campaign.findMany({where:{status:"LIVE"},include:{business:{select:{name:true,verified:true}},orders:{where:activeWhere,select:{quantity:true}}},orderBy:{createdAt:"desc"}});
+  return json(res,200,rows.map(({orders,...x})=>{const used=orders.reduce((n,o)=>n+o.quantity,0),remaining=x.availableQuantity==null?null:Math.max(0,x.availableQuantity-used),legacyIncomplete=x.type==="ORDER"&&!marketplaceReady(x);return {...x,remainingQuantity:remaining,legacyIncomplete,soldOut:legacyIncomplete||orders.length>=x.cap||remaining===0}}));
+ }
+ const publicCampaign=p.match(/^\/campaigns\/([^/]+)$/);
+ if(m==="GET"&&publicCampaign){
+  const now=new Date(),activeWhere={status:{notIn:["CANCELLED","RETURNED"]},OR:[{expiresAt:null},{expiresAt:{gt:now}},{status:{notIn:["SUBMITTED","CUSTOMER_CONFIRMED"]}}]};
+  const row=await db.campaign.findFirst({where:{id:publicCampaign[1],type:"ORDER",status:{in:["LIVE","PAUSED"]}},include:{business:{select:{name:true,verified:true}},orders:{where:activeWhere,select:{quantity:true}}}});
+  if(!row)return json(res,404,{error:"Product not found"});
+  const {orders,...x}=row,used=orders.reduce((n,o)=>n+o.quantity,0),remaining=x.availableQuantity==null?null:Math.max(0,x.availableQuantity-used);
+  const legacyIncomplete=!marketplaceReady(x);return json(res,200,{...x,remainingQuantity:remaining,legacyIncomplete,soldOut:legacyIncomplete||x.status==="PAUSED"||orders.length>=x.cap||remaining===0});
+ }
+
+ // A shared product link is earner-bound by its attribution code. The customer
+ // creates the order directly; the business never chooses or replaces the earner.
+ if(m==="POST"&&p==="/customer/orders"){
+  const b=await body(req),ref=String(b.attributionCode||""),campaignId=String(b.campaignId||""),quantity=Number(b.quantity),phone=cleanPhone(b.customerPhone);
+  if(!text(ref,5,80)||!text(campaignId,5,100)||!text(b.customerName,2,80)||!validPhone(phone)||!Number.isInteger(quantity)||quantity<1||!text(b.deliveryLocation,3,300))return json(res,400,{error:"Complete name, Nepal mobile, quantity and delivery location"});
+  const a=await db.attribution.findUnique({where:{code:ref}});
+  if(!a||a.campaignId!==campaignId)return json(res,400,{error:"Invalid seller attribution"});
+  const token=crypto.randomBytes(24).toString("hex"),pin=String(crypto.randomInt(100000,1000000)),idempotencyKey=text(b.idempotencyKey,8,100)?b.idempotencyKey:"customer:"+crypto.randomUUID();
+  const result=await db.$transaction(async tx=>{
+   await tx.$queryRawUnsafe('SELECT id FROM "Campaign" WHERE id = $1 FOR UPDATE',campaignId);
+   await expireReservations(tx,campaignId);
+   const campaign=await tx.campaign.findFirst({where:{id:campaignId,type:"ORDER",status:"LIVE"}});
+   if(!campaign)throw Object.assign(new Error("This product is not currently available"),{status:409});
+   if(!marketplaceReady(campaign))throw Object.assign(new Error("This legacy campaign must be upgraded before customers can order from a shared link"),{status:409});
+   const duplicate=await tx.order.findFirst({where:{campaignId,customerPhoneHash:hashPhone(phone),status:{notIn:["CANCELLED","RETURNED"]}}});
+   if(duplicate)throw Object.assign(new Error("This customer already has an active order"),{status:409});
+   const active=await tx.order.findMany({where:{campaignId,status:{notIn:["CANCELLED","RETURNED"]}},select:{quantity:true}});
+   const used=active.reduce((n,o)=>n+o.quantity,0);
+   if(active.length>=campaign.cap||campaign.availableQuantity!=null&&used+quantity>campaign.availableQuantity)throw Object.assign(new Error("Not enough quantity remains"),{status:409});
+   const quote=commissionQuote(campaign,quantity),subtotal=BigInt(campaign.unitPricePaisa||0)*BigInt(quantity),expiresAt=new Date(Date.now()+ORDER_RESERVATION_MINUTES*60000);
+   const order=await tx.order.create({data:{campaignId,businessId:campaign.businessId,earnerId:a.earnerId,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:hashPhone(phone),deliveryLocation:b.deliveryLocation.trim(),customerConfirmTokenHash:hashSecret(token),customerConfirmedAt:new Date(),deliveryPinHash:hashSecret(pin),expiresAt,campaignVersionSnapshot:campaign.version,customerOfferSnapshot:campaign.customerOffer,campaignTermsSnapshot:campaign.campaignTerms,deliveryInfoSnapshot:campaign.deliveryInfo,product:campaign.title,quantity,status:"CUSTOMER_CONFIRMED",idempotencyKey,unitPricePaisaSnapshot:campaign.unitPricePaisa,commissionBasisSnapshot:campaign.commissionBasis,businessCommissionPaisaSnapshot:campaign.businessCommissionPaisa,businessCommissionBpsSnapshot:campaign.businessCommissionBps,earnerShareBpsSnapshot:campaign.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
+   await tx.orderEvent.create({data:{orderId:order.id,type:"CUSTOMER_ORDERED_FROM_SHARED_LINK",actorRole:"CUSTOMER",metadata:{attributionCode:a.code,campaignVersion:campaign.version,reservedUntil:expiresAt.toISOString()}}});
+   const biz=await tx.business.findUnique({where:{id:campaign.businessId}});
+   await notify(tx,a.earnerId,"CUSTOMER_ORDER","Customer placed an order",campaign.title+" × "+quantity,order.id);
+   if(biz)await notify(tx,biz.ownerId,"NEW_ORDER","New attributed order",campaign.title+" × "+quantity,order.id);
+   return order;
+  });
+  return json(res,201,{id:result.id,status:result.status,orderPath:"/order?token="+token,deliveryPin:pin,expiresAt:result.expiresAt});
  }
 
  // Customer endpoints are intentionally public but protected by a high-entropy order token.
@@ -75,6 +142,7 @@ module.exports=async(req,res)=>{try{
   const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(t)}});
   if(!o)return json(res,404,{error:"Order not found"});
   if(o.status!=="SUBMITTED"&&o.status!=="CUSTOMER_CONFIRMED")return json(res,409,{error:"Order can no longer be confirmed"});
+  if(reservationExpired(o)){await db.order.update({where:{id:o.id},data:{status:"CANCELLED",cancelledAt:new Date(),cancelReason:"Reservation expired"}});return json(res,409,{error:"This order reservation has expired"});}
   if(o.status==="CUSTOMER_CONFIRMED")return json(res,200,{id:o.id,status:o.status});
   const pin=String(crypto.randomInt(100000,1000000));
   const x=await db.order.update({where:{id:o.id},data:{status:"CUSTOMER_CONFIRMED",customerConfirmedAt:new Date(),deliveryPinHash:hashSecret(pin)}});
@@ -144,7 +212,7 @@ module.exports=async(req,res)=>{try{
    await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"PLATFORM"}},create:{orderId:o.id,partyType:"PLATFORM",amountPaisa:platform,status:settleStatus},update:{amountPaisa:platform,status:settleStatus}});
    if(o.logistics)await tx.settlement.upsert({where:{orderId_partyType:{orderId:o.id,partyType:"TRANSPORTER"}},create:{orderId:o.id,partyType:"TRANSPORTER",amountPaisa:o.logistics.transporterCostPaisa,status:settleStatus},update:{amountPaisa:o.logistics.transporterCostPaisa,status:settleStatus}});
    if(refund>0n&&o.payment)await tx.payment.update({where:{orderId:o.id},data:{status:"REFUND_PENDING",refundedPaisa:refund}});
-   await tx.orderEvent.create({data:{orderId:o.id,type:next,actorRole:"CUSTOMER",metadata:{verifiedQuantity:qty,returnedQuantity:returned,refundPaisa:refund.toString()}}});
+   await tx.orderEvent.create({data:{orderId:o.id,type:next,actorRole:"CUSTOMER",metadata:{verifiedQuantity:qty,returnedQuantity:returned,refundPaisa:refund.toString()}}});await notify(tx,o.earnerId,"COMMISSION_EARNED","Commission earned","Rs "+(Number(earner)/100).toFixed(2)+" from "+o.product,o.id);
    return tx.order.findUnique({where:{id:o.id},include:{reward:true,settlements:true}});
   });
   return json(res,200,result);
@@ -156,6 +224,33 @@ module.exports=async(req,res)=>{try{
   const u=await db.user.findUnique({where:{id:session.sub},include:{earner:true,business:true}});
   if(!u)return json(res,404,{error:"Account not found"});
   return json(res,200,publicUser(u));
+ }
+
+ if(m==="GET"&&p==="/notifications"){
+  const rows=await db.notification.findMany({where:{userId:session.sub},orderBy:{createdAt:"desc"},take:50});
+  return json(res,200,{unread:rows.filter(x=>!x.readAt).length,items:rows});
+ }
+ if(m==="POST"&&p==="/notifications/read"){
+  await db.notification.updateMany({where:{userId:session.sub,readAt:null},data:{readAt:new Date()}});
+  return json(res,200,{ok:true});
+ }
+ if(m==="GET"&&p==="/me/performance"){
+  requireRole(session,"EARNER");
+  const rows=await db.order.findMany({where:{earnerId:session.sub},include:{reward:true}});
+  const submitted=rows.length,confirmed=rows.filter(x=>x.customerConfirmedAt).length,delivered=rows.filter(x=>["DELIVERED","VERIFIED","PARTIALLY_DELIVERED"].includes(x.status)).length,earned=rows.reduce((n,x)=>n+BigInt(x.reward?.amountPaisa||0),0n);
+  return json(res,200,{submitted,confirmed,delivered,conversionRate:submitted?Math.round(delivered*10000/submitted)/100:0,commissionEarnedPaisa:earned});
+ }
+ if(m==="GET"&&p==="/business/performance"){
+  requireRole(session,"BUSINESS");const biz=await db.business.findUnique({where:{ownerId:session.sub}});if(!biz)return json(res,409,{error:"Business profile required"});
+  const rows=await db.order.findMany({where:{businessId:biz.id},include:{earner:{include:{earner:true}}}});
+  const completed=rows.filter(x=>["VERIFIED","PARTIALLY_DELIVERED"].includes(x.status)),units=completed.reduce((n,x)=>n+(x.deliveredQuantity??x.quantity),0),gmv=completed.reduce((n,x)=>n+BigInt(x.unitPricePaisaSnapshot||0)*BigInt(x.deliveredQuantity??x.quantity),0n),commission=completed.reduce((n,x)=>{const q=BigInt(x.deliveredQuantity??x.quantity);if(x.commissionBasisSnapshot==="PER_UNIT")return n+BigInt(x.businessCommissionPaisaSnapshot||0)*q;if(x.commissionBasisSnapshot==="PERCENT_GMV")return n+(BigInt(x.unitPricePaisaSnapshot||0)*q*BigInt(x.businessCommissionBpsSnapshot||0)+5000n)/10000n;return n+(q>0n?BigInt(x.totalCommissionPaisaSnapshot||0):0n)},0n),activeEarners=new Set(rows.map(x=>x.earnerId)).size;
+  const scores=new Map();for(const o of completed){const q=o.deliveredQuantity??o.quantity,old=scores.get(o.earnerId)||{earnerId:o.earnerId,name:o.earner?.earner?.displayName||"Earner",units:0,orders:0};old.units+=q;old.orders++;scores.set(o.earnerId,old)}
+  return json(res,200,{orders:rows.length,unitsSold:units,gmvPaisa:gmv,commissionCostPaisa:commission,activeEarners,conversionRate:rows.length?Math.round(completed.length*10000/rows.length)/100:0,topEarners:[...scores.values()].sort((a,b)=>b.units-a.units).slice(0,5)});
+ }
+ if(m==="GET"&&p==="/admin/exceptions"){
+  requireRole(session,"ADMIN");const cutoff=new Date(Date.now()-24*60*60*1000);
+  const rows=await db.order.findMany({where:{OR:[{status:"DISPUTED"},{payment:{status:{in:["REFUND_PENDING","SUBMITTED"]}}},{status:{in:["SUBMITTED","CUSTOMER_CONFIRMED","PAYMENT_PENDING","READY_FOR_PICKUP","PICKED_UP","OUT_FOR_DELIVERY"]},updatedAt:{lt:cutoff}}]},include:{campaign:{select:{title:true}},business:{select:{name:true}},payment:true,logistics:true,disputes:{where:{status:"OPEN"}}},orderBy:{updatedAt:"asc"}});
+  return json(res,200,rows);
  }
 
  if(m==="POST"&&p==="/campaigns"){
@@ -183,8 +278,42 @@ module.exports=async(req,res)=>{try{
    if(!Number.isFinite(reward)||reward<=0)return json(res,400,{error:"Reward must be positive"});
    rewardPaisa=BigInt(Math.round(reward*100));
   }
-  const row=await db.campaign.create({data:{businessId:biz.id,type:b.type,title:b.title.trim(),city:b.city.trim(),rewardPaisa,cap,successRule:b.successRule.trim(),status:"DRAFT",...commercial}});
+  const images=b.type==="ORDER"?campaignImages(b):{mainImageData:null,supportingImageData:[]};
+  const meta=b.type==="ORDER"?campaignMeta(b):{};
+  const row=await db.campaign.create({data:{businessId:biz.id,type:b.type,title:b.title.trim(),city:b.city.trim(),rewardPaisa,cap,successRule:b.successRule.trim(),status:"DRAFT",...commercial,...images,...meta}});
   return json(res,201,row);
+ }
+
+ const editCampaign=p.match(/^\/campaigns\/([^/]+)$/);
+ if(m==="PATCH"&&editCampaign){
+  requireRole(session,"BUSINESS","ADMIN"); const b=await body(req);
+  const current=await db.campaign.findUnique({where:{id:editCampaign[1]},include:{business:true}});
+  if(!current)return json(res,404,{error:"Campaign not found"});
+  if(session.role!=="ADMIN"&&current.business.ownerId!==session.sub)return json(res,403,{error:"Forbidden"});
+  if(current.status==="CLOSED")return json(res,409,{error:"Closed campaigns cannot be edited"});
+  const economic=["unitPriceNpr","businessCommissionNpr","businessCommissionPercent","earnerSharePercent","commissionBasis","unitLabel"].some(k=>Object.prototype.hasOwnProperty.call(b,k));
+  if(current.status==="LIVE"&&economic&&b.confirmEconomicVersion!==true)return json(res,409,{error:"Economic changes create a new campaign version. Confirm the version change first."});
+  const data={};
+  if(text(b.title,3,100))data.title=b.title.trim();
+  if(text(b.description,10,800))data.description=b.description.trim();
+  if(text(b.serviceArea,2,120)){data.serviceArea=b.serviceArea.trim();data.city=b.serviceArea.trim()}
+  if(text(b.whatsappPitch,10,700))data.whatsappPitch=b.whatsappPitch.trim();
+  if(Object.prototype.hasOwnProperty.call(b,"customerOffer"))data.customerOffer=text(b.customerOffer,2,500)?b.customerOffer.trim():null;
+  if(text(b.deliveryInfo,5,500))data.deliveryInfo=b.deliveryInfo.trim();
+  if(text(b.campaignTerms,5,1000))data.campaignTerms=b.campaignTerms.trim();
+  if(Array.isArray(b.sellingPoints)){const pts=b.sellingPoints.map(x=>String(x).trim()).filter(Boolean);if(pts.length<3||pts.length>5)return json(res,400,{error:"Keep 3–5 selling points"});data.sellingPoints=pts}
+  if(Object.prototype.hasOwnProperty.call(b,"availableQuantity")){const q=Number(b.availableQuantity);if(!Number.isInteger(q)||q<1)return json(res,400,{error:"Available quantity must be positive"});data.availableQuantity=q}
+  if(Object.prototype.hasOwnProperty.call(b,"mainImageData")||Object.prototype.hasOwnProperty.call(b,"supportingImageData"))Object.assign(data,campaignImages({mainImageData:Object.prototype.hasOwnProperty.call(b,"mainImageData")?b.mainImageData:current.mainImageData,supportingImageData:Object.prototype.hasOwnProperty.call(b,"supportingImageData")?b.supportingImageData:current.supportingImageData}));
+  if(economic){
+   const basis=String(b.commissionBasis||current.commissionBasis),price=Number(b.unitPriceNpr??Number(current.unitPricePaisa||0)/100),commission=Number(b.businessCommissionNpr??Number(current.businessCommissionPaisa||0)/100),pct=Number(b.businessCommissionPercent??Number(current.businessCommissionBps||0)/100),share=Number(b.earnerSharePercent??current.earnerShareBps/100);
+   if(!["FIXED_ORDER","PER_UNIT","PERCENT_GMV"].includes(basis)||!Number.isFinite(share)||share<=0||share>100)return json(res,400,{error:"Invalid commission terms"});
+   data.commissionBasis=basis;data.unitLabel=text(b.unitLabel,1,30)?b.unitLabel.trim():current.unitLabel;data.unitPricePaisa=price>0?BigInt(Math.round(price*100)):current.unitPricePaisa;data.businessCommissionPaisa=basis!=="PERCENT_GMV"&&commission>0?BigInt(Math.round(commission*100)):null;data.businessCommissionBps=basis==="PERCENT_GMV"&&pct>0?Math.round(pct*100):null;data.earnerShareBps=Math.round(share*100);
+  }
+  const updated=await db.$transaction(async tx=>{
+   await tx.campaignRevision.create({data:{campaignId:current.id,version:current.version,snapshot:campaignSnapshot(current)}});
+   return tx.campaign.update({where:{id:current.id},data:{...data,version:{increment:1}}});
+  });
+  return json(res,200,updated);
  }
 
  const pub=p.match(/^\/campaigns\/([^/]+)\/publish$/);
@@ -197,7 +326,8 @@ module.exports=async(req,res)=>{try{
    const legacy=c.commissionBasis==="FIXED_ORDER"&&c.businessCommissionPaisa==null&&c.businessCommissionBps==null;
    const missingSplit=!Number.isInteger(c.earnerShareBps)||c.earnerShareBps<=0||c.earnerShareBps>10000;
    const missingTerms=c.commissionBasis==="PER_UNIT"&&(!c.unitPricePaisa||!c.unitLabel||!c.businessCommissionPaisa)||c.commissionBasis==="PERCENT_GMV"&&(!c.unitPricePaisa||!c.unitLabel||!c.businessCommissionBps)||c.commissionBasis==="FIXED_ORDER"&&!c.businessCommissionPaisa;
-   if(legacy||missingSplit||missingTerms)return json(res,409,{error:"This ORDER campaign has incomplete commission terms and cannot be published."});
+   const missingMarketplace=!c.brandName||!c.category||!c.packSize||!c.description||!c.serviceArea||!c.availableQuantity||c.sellingPoints.length<3||!c.whatsappPitch||!c.deliveryInfo||!c.campaignTerms;
+   if(legacy||missingSplit||missingTerms||missingMarketplace)return json(res,409,{error:"This ORDER campaign has incomplete product, availability or commission terms and cannot be published."});
   }
   return json(res,200,await db.campaign.update({where:{id:c.id},data:{status:"LIVE"}}));
  }
@@ -211,7 +341,7 @@ module.exports=async(req,res)=>{try{
   const next={pause:"PAUSED",resume:"LIVE",close:"CLOSED"}[ctl[2]];
   if(c.status==="CLOSED")return json(res,409,{error:"Closed campaigns cannot be reopened"});
   if(ctl[2]==="resume"&&c.status!=="PAUSED")return json(res,409,{error:"Only paused campaigns can resume"});
-  return json(res,200,await db.campaign.update({where:{id:c.id},data:{status:next}}));
+  return json(res,200,await db.campaign.update({where:{id:c.id},data:{status:next,autoPaused:false}}));
  }
 
  const start=p.match(/^\/campaigns\/([^/]+)\/start$/);
@@ -237,6 +367,7 @@ module.exports=async(req,res)=>{try{
    const o=await db.$transaction(async tx=>{
     // Lock this campaign row so cap checks and inserts for the same campaign serialize.
     await tx.$queryRawUnsafe('SELECT id FROM "Campaign" WHERE id = $1 FOR UPDATE',c.id);
+    await expireReservations(tx,c.id);
     const duplicate=await tx.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{notIn:["CANCELLED","RETURNED"]}}});
     if(duplicate){const err=new Error("DUPLICATE_BUYER");err.code="DUPLICATE_BUYER";throw err}
     // The removed handler counted EARNED/PAYABLE/PAID rewards against the cap.
@@ -244,15 +375,18 @@ module.exports=async(req,res)=>{try{
     // one slot. Without this reservation, two new orders could both pass a reward-only
     // count before either has reached reward creation.
     const reserved=await tx.order.count({where:{campaignId:c.id,status:{notIn:["CANCELLED","RETURNED"]}}});
+    const unitAgg=await tx.order.aggregate({_sum:{quantity:true},where:{campaignId:c.id,status:{notIn:["CANCELLED","RETURNED"]}}}),reservedUnits=unitAgg._sum.quantity||0;
     if(reserved>=c.cap){const err=new Error("CAMPAIGN_CAP");err.code="CAMPAIGN_CAP";throw err}
-    const order=await tx.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
+    if(c.availableQuantity!=null&&reservedUnits+quantity>c.availableQuantity){const err=new Error("CAMPAIGN_STOCK");err.code="CAMPAIGN_STOCK";throw err}
+    const order=await tx.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,expiresAt:new Date(Date.now()+ORDER_RESERVATION_MINUTES*60000),campaignVersionSnapshot:c.version,customerOfferSnapshot:c.customerOffer,campaignTermsSnapshot:c.campaignTerms,deliveryInfoSnapshot:c.deliveryInfo,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
     await tx.orderEvent.create({data:{orderId:order.id,type:"ORDER_SUBMITTED",actorRole:"EARNER",actorId:session.sub}});
     return order;
    });
-   return json(res,201,{...o,customerConfirmationPath:"/confirm-order?token="+confirmToken});
+   return json(res,201,{...o,customerConfirmationPath:"/order?token="+confirmToken});
   } catch(err) {
    if(err.code==="DUPLICATE_BUYER")return json(res,409,{error:"This customer already has an active or completed order"});
-   if(err.code==="CAMPAIGN_CAP")return json(res,409,{error:"Campaign reward cap reached"});
+   if(err.code==="CAMPAIGN_CAP")return json(res,409,{error:"Campaign sales cap reached"})
+   if(err.code==="CAMPAIGN_STOCK")return json(res,409,{error:"Not enough campaign quantity remains"})
    throw err;
   }
  }
@@ -279,8 +413,9 @@ module.exports=async(req,res)=>{try{
   if(!o)return json(res,404,{error:"Order not found"}); if(session.role!=="ADMIN"&&o.business.ownerId!==session.sub)return json(res,403,{error:"Forbidden"});
   if(action[2]==="accept"){
    if(o.status!=="CUSTOMER_CONFIRMED")return json(res,409,{error:"Customer must confirm first"});
+   if(reservationExpired(o)){await db.order.update({where:{id:o.id},data:{status:"CANCELLED",cancelledAt:new Date(),cancelReason:"Reservation expired"}});return json(res,409,{error:"This order reservation has expired"});}
    const qty=Number(b.quantity||o.quantity); if(!Number.isInteger(qty)||qty<1||qty>o.quantity)return json(res,400,{error:"Invalid accepted quantity"});
-   const x=await db.$transaction(async tx=>{const z=await tx.order.update({where:{id:o.id},data:{status:"ACCEPTED",acceptedQuantity:qty,acceptedAt:new Date()}});await tx.orderEvent.create({data:{orderId:o.id,type:"BUSINESS_ACCEPTED",actorRole:session.role,actorId:session.sub,metadata:{acceptedQuantity:qty}}});return z}); return json(res,200,x);
+   const x=await db.$transaction(async tx=>{const z=await tx.order.update({where:{id:o.id},data:{status:"ACCEPTED",acceptedQuantity:qty,acceptedAt:new Date()}});await tx.orderEvent.create({data:{orderId:o.id,type:"BUSINESS_ACCEPTED",actorRole:session.role,actorId:session.sub,metadata:{acceptedQuantity:qty}}});await notify(tx,o.earnerId,"ORDER_ACCEPTED","Business accepted your order",o.product+" × "+qty,o.id);return z}); return json(res,200,x);
   }
   if(action[2]==="ready"){
    if(o.status!=="PAID")return json(res,409,{error:"Payment must be confirmed first"});
@@ -292,19 +427,19 @@ module.exports=async(req,res)=>{try{
  }
 
  const payConfirm=p.match(/^\/orders\/([^/]+)\/confirm-payment$/);
- if(m==="POST"&&payConfirm){requireRole(session,"ADMIN");const o=await db.order.findUnique({where:{id:payConfirm[1]},include:{payment:true}});if(!o||!o.payment)return json(res,404,{error:"Payment not found"});if(o.payment.status!=="SUBMITTED")return json(res,409,{error:"Customer payment reference has not been submitted"});const x=await db.$transaction(async tx=>{await tx.payment.update({where:{orderId:o.id},data:{status:"CONFIRMED",confirmedAt:new Date()}});const z=await tx.order.update({where:{id:o.id},data:{status:"PAID",paymentConfirmedAt:new Date()}});await tx.orderEvent.create({data:{orderId:o.id,type:"PAYMENT_CONFIRMED",actorRole:"ADMIN",actorId:session.sub}});return z});return json(res,200,x)}
+ if(m==="POST"&&payConfirm){requireRole(session,"ADMIN");const o=await db.order.findUnique({where:{id:payConfirm[1]},include:{payment:true}});if(!o||!o.payment)return json(res,404,{error:"Payment not found"});if(o.payment.status!=="SUBMITTED")return json(res,409,{error:"Customer payment reference has not been submitted"});const x=await db.$transaction(async tx=>{await tx.payment.update({where:{orderId:o.id},data:{status:"CONFIRMED",confirmedAt:new Date()}});const z=await tx.order.update({where:{id:o.id},data:{status:"PAID",paymentConfirmedAt:new Date()}});await tx.orderEvent.create({data:{orderId:o.id,type:"PAYMENT_CONFIRMED",actorRole:"ADMIN",actorId:session.sub}});await notify(tx,o.earnerId,"PAYMENT_CONFIRMED","Payment confirmed",o.product,o.id);return z});return json(res,200,x)}
 
  const assign=p.match(/^\/orders\/([^/]+)\/assign-logistics$/);
  if(m==="POST"&&assign){requireRole(session,"ADMIN");const b=await body(req),o=await db.order.findUnique({where:{id:assign[1]}});if(!o||o.status!=="ACCEPTED")return json(res,409,{error:"Business must accept the order before logistics is quoted"});if(!text(b.transporterName,2,100))return json(res,400,{error:"Transporter name required"});const quoted=BigInt(Math.round(Number(b.quotedFeeNpr||0)*100)),cost=BigInt(Math.round(Number(b.transporterCostNpr||0)*100));if(quoted<0n||cost<0n||cost>quoted)return json(res,400,{error:"Enter valid logistics quote and transporter cost"});const code=String(crypto.randomInt(100000,1000000)),amount=BigInt(o.unitPricePaisaSnapshot||0)*BigInt(o.acceptedQuantity||o.quantity)+quoted;const result=await db.$transaction(async tx=>{const l=await tx.logisticsAssignment.upsert({where:{orderId:o.id},create:{orderId:o.id,transporterName:b.transporterName.trim(),transporterPhone:b.transporterPhone||null,quotedFeePaisa:quoted,transporterCostPaisa:cost,pickupCodeHash:hashSecret(code)},update:{transporterName:b.transporterName.trim(),transporterPhone:b.transporterPhone||null,quotedFeePaisa:quoted,transporterCostPaisa:cost,pickupCodeHash:hashSecret(code)}});await tx.payment.upsert({where:{orderId:o.id},create:{orderId:o.id,amountPaisa:amount,method:"BANK_OR_QR"},update:{amountPaisa:amount,status:"PENDING"}});await tx.order.update({where:{id:o.id},data:{status:"PAYMENT_PENDING",deliveryFeePaisa:quoted}});await tx.orderEvent.create({data:{orderId:o.id,type:"LOGISTICS_QUOTED",actorRole:"ADMIN",actorId:session.sub,metadata:{quotedFeePaisa:quoted.toString(),transporterCostPaisa:cost.toString()}}});return l});return json(res,200,{...result,pickupCode:code,paymentAmountPaisa:amount})}
 
  const pickup=p.match(/^\/orders\/([^/]+)\/pickup$/);
- if(m==="POST"&&pickup){requireRole(session,"ADMIN");const b=await body(req),o=await db.order.findUnique({where:{id:pickup[1]},include:{logistics:true}});if(!o||o.status!=="READY_FOR_PICKUP"||!o.logistics)return json(res,409,{error:"Logistics must be assigned"});if(hashSecret(String(b.pickupCode||""))!==o.logistics.pickupCodeHash)return json(res,409,{error:"Incorrect pickup code"});const qty=Number(b.quantity);if(!Number.isInteger(qty)||qty<1||qty>(o.acceptedQuantity||o.quantity))return json(res,400,{error:"Invalid pickup quantity"});const x=await db.$transaction(async tx=>{await tx.logisticsAssignment.update({where:{orderId:o.id},data:{status:"PICKED_UP",pickedUpAt:new Date()}});const z=await tx.order.update({where:{id:o.id},data:{status:"PICKED_UP",pickedUpQuantity:qty,pickedUpAt:new Date()}});await tx.orderEvent.create({data:{orderId:o.id,type:"PICKED_UP",actorRole:"ADMIN",actorId:session.sub,metadata:{quantity:qty}}});return z});return json(res,200,x)}
+ if(m==="POST"&&pickup){requireRole(session,"ADMIN");const b=await body(req),o=await db.order.findUnique({where:{id:pickup[1]},include:{logistics:true}});if(!o||o.status!=="READY_FOR_PICKUP"||!o.logistics)return json(res,409,{error:"Logistics must be assigned"});if(hashSecret(String(b.pickupCode||""))!==o.logistics.pickupCodeHash)return json(res,409,{error:"Incorrect pickup code"});const qty=Number(b.quantity);if(!Number.isInteger(qty)||qty<1||qty>(o.acceptedQuantity||o.quantity))return json(res,400,{error:"Invalid pickup quantity"});const x=await db.$transaction(async tx=>{await tx.logisticsAssignment.update({where:{orderId:o.id},data:{status:"PICKED_UP",pickedUpAt:new Date()}});const z=await tx.order.update({where:{id:o.id},data:{status:"PICKED_UP",pickedUpQuantity:qty,pickedUpAt:new Date()}});await tx.orderEvent.create({data:{orderId:o.id,type:"PICKED_UP",actorRole:"ADMIN",actorId:session.sub,metadata:{quantity:qty}}});await notify(tx,o.earnerId,"PICKED_UP","Order picked up",o.product+" × "+qty,o.id);return z});return json(res,200,x)}
 
  const out=p.match(/^\/orders\/([^/]+)\/out-for-delivery$/);
  if(m==="POST"&&out){requireRole(session,"ADMIN");const o=await db.order.findUnique({where:{id:out[1]}});if(!o||o.status!=="PICKED_UP")return json(res,409,{error:"Order must be picked up"});await db.logisticsAssignment.update({where:{orderId:o.id},data:{status:"OUT_FOR_DELIVERY"}});return json(res,200,await db.order.update({where:{id:o.id},data:{status:"OUT_FOR_DELIVERY"}}))}
 
  const delivered=p.match(/^\/orders\/([^/]+)\/delivered$/);
- if(m==="POST"&&delivered){requireRole(session,"ADMIN");const o=await db.order.findUnique({where:{id:delivered[1]}});if(!o||!["PICKED_UP","OUT_FOR_DELIVERY"].includes(o.status))return json(res,409,{error:"Order is not in delivery"});await db.logisticsAssignment.update({where:{orderId:o.id},data:{status:"DELIVERED",deliveredAt:new Date()}});const x=await db.order.update({where:{id:o.id},data:{status:"DELIVERED",deliveredAt:new Date()}});await db.orderEvent.create({data:{orderId:o.id,type:"DELIVERED",actorRole:"ADMIN",actorId:session.sub}});return json(res,200,x)}
+ if(m==="POST"&&delivered){requireRole(session,"ADMIN");const o=await db.order.findUnique({where:{id:delivered[1]}});if(!o||!["PICKED_UP","OUT_FOR_DELIVERY"].includes(o.status))return json(res,409,{error:"Order is not in delivery"});await db.logisticsAssignment.update({where:{orderId:o.id},data:{status:"DELIVERED",deliveredAt:new Date()}});const x=await db.order.update({where:{id:o.id},data:{status:"DELIVERED",deliveredAt:new Date()}});await db.orderEvent.create({data:{orderId:o.id,type:"DELIVERED",actorRole:"ADMIN",actorId:session.sub}});await db.notification.create({data:{userId:o.earnerId,type:"DELIVERED",title:"Order delivered",message:o.product,orderId:o.id}});return json(res,200,x)}
 
  const dispute=p.match(/^\/orders\/([^/]+)\/dispute$/);
  if(m==="POST"&&dispute){const b=await body(req);if(!text(b.reason,3,120))return json(res,400,{error:"Dispute reason required"});const o=await db.order.findUnique({where:{id:dispute[1]},include:{business:true}});if(!o)return json(res,404,{error:"Order not found"});if(session.role==="EARNER"&&o.earnerId!==session.sub||session.role==="BUSINESS"&&o.business.ownerId!==session.sub)return json(res,403,{error:"Forbidden"});const d=await db.dispute.create({data:{orderId:o.id,openedBy:session.role+":"+session.sub,reason:b.reason,details:b.details||null}});await db.order.update({where:{id:o.id},data:{status:"DISPUTED"}});return json(res,201,d)}
