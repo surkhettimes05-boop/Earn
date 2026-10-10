@@ -15,6 +15,14 @@ const validPhone=p=>/^9779[678]\d{8}$/.test(p)||/^9[678]\d{8}$/.test(p);
 const hashPhone=p=>crypto.createHash("sha256").update(cleanPhone(p)).digest("hex");
 const text=(v,min,max)=>typeof v==="string"&&v.trim().length>=min&&v.trim().length<=max;
 const hashSecret=v=>crypto.createHash("sha256").update(String(v)).digest("hex");
+const validImageData=v=>typeof v==="string"&&/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(v)&&v.length<=180000;
+const campaignImages=b=>{
+ const main=b.mainImageData||null,supporting=Array.isArray(b.supportingImageData)?b.supportingImageData:[];
+ if(main&&!validImageData(main))throw Object.assign(new Error("Main image must be JPG, PNG or WebP and under the upload limit"),{status:400});
+ if(supporting.length>4||supporting.some(x=>!validImageData(x)))throw Object.assign(new Error("Add no more than 4 supporting JPG, PNG or WebP images"),{status:400});
+ if((main?main.length:0)+supporting.reduce((n,x)=>n+x.length,0)>850000)throw Object.assign(new Error("Product images are too large. Choose smaller photos."),{status:413});
+ return {mainImageData:main,supportingImageData:supporting};
+};
 const publicUser=u=>({id:u.id,phone:u.phone,role:u.role,displayName:u.earner?.displayName||null,business:u.business?{id:u.business.id,name:u.business.name,verified:u.business.verified}:null});
 
 module.exports=async(req,res)=>{try{
@@ -183,7 +191,8 @@ module.exports=async(req,res)=>{try{
    if(!Number.isFinite(reward)||reward<=0)return json(res,400,{error:"Reward must be positive"});
    rewardPaisa=BigInt(Math.round(reward*100));
   }
-  const row=await db.campaign.create({data:{businessId:biz.id,type:b.type,title:b.title.trim(),city:b.city.trim(),rewardPaisa,cap,successRule:b.successRule.trim(),status:"DRAFT",...commercial}});
+  const images=b.type==="ORDER"?campaignImages(b):{mainImageData:null,supportingImageData:[]};
+  const row=await db.campaign.create({data:{businessId:biz.id,type:b.type,title:b.title.trim(),city:b.city.trim(),rewardPaisa,cap,successRule:b.successRule.trim(),status:"DRAFT",...commercial,...images}});
   return json(res,201,row);
  }
 
