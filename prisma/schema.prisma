@@ -142,6 +142,8 @@ model Campaign {
   earnerShareBps Int @default(10000)
   cap         Int
   successRule String
+  mainImageData String?
+  supportingImageData String[] @default([])
   createdAt   DateTime       @default(now())
   orders      Order[]
 }
