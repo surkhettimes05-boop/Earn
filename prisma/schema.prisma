@@ -158,6 +158,7 @@ model Campaign {
   deliveryInfo String?
   campaignTerms String?
   version Int @default(1)
+  autoPaused Boolean @default(false)
   createdAt   DateTime       @default(now())
   orders      Order[]
   revisions   CampaignRevision[]
