@@ -37,7 +37,8 @@ const ORDER_RESERVATION_MINUTES=120;
 const notify=(tx,userId,type,title,message,orderId)=>tx.notification.create({data:{userId,type,title,message,orderId:orderId||null}});
 const expireReservations=async(tx,campaignId)=>{
  const now=new Date();
- await tx.order.updateMany({where:{campaignId,status:{in:["SUBMITTED","CUSTOMER_CONFIRMED"]},expiresAt:{lt:now}},data:{status:"CANCELLED",cancelledAt:now,cancelReason:"Reservation expired"}});
+ const expired=await tx.order.updateMany({where:{campaignId,status:{in:["SUBMITTED","CUSTOMER_CONFIRMED"]},expiresAt:{lt:now}},data:{status:"CANCELLED",cancelledAt:now,cancelReason:"Reservation expired"}});
+ if(expired.count){const campaign=await tx.campaign.findUnique({where:{id:campaignId}});if(campaign?.autoPaused)await tx.campaign.update({where:{id:campaignId},data:{status:"LIVE",autoPaused:false}})}
 };
 const campaignSnapshot=c=>({version:c.version,title:c.title,unitPricePaisa:String(c.unitPricePaisa||0),commissionBasis:c.commissionBasis,businessCommissionPaisa:c.businessCommissionPaisa==null?null:String(c.businessCommissionPaisa),businessCommissionBps:c.businessCommissionBps,earnerShareBps:c.earnerShareBps,unitLabel:c.unitLabel,customerOffer:c.customerOffer,campaignTerms:c.campaignTerms,deliveryInfo:c.deliveryInfo});
 const publicUser=u=>({id:u.id,phone:u.phone,role:u.role,displayName:u.earner?.displayName||null,business:u.business?{id:u.business.id,name:u.business.name,verified:u.business.verified}:null});
@@ -106,7 +107,7 @@ module.exports=async(req,res)=>{try{
    const biz=await tx.business.findUnique({where:{id:campaign.businessId}});
    await notify(tx,a.earnerId,"CUSTOMER_ORDER","Customer placed an order",campaign.title+" × "+quantity,order.id);
    if(biz)await notify(tx,biz.ownerId,"NEW_ORDER","New attributed order",campaign.title+" × "+quantity,order.id);
-   if(active.length+1>=campaign.cap||campaign.availableQuantity!=null&&used+quantity>=campaign.availableQuantity)await tx.campaign.update({where:{id:campaign.id},data:{status:"PAUSED"}});
+   if(active.length+1>=campaign.cap||campaign.availableQuantity!=null&&used+quantity>=campaign.availableQuantity)await tx.campaign.update({where:{id:campaign.id},data:{status:"PAUSED",autoPaused:true}});
    return order;
   });
   return json(res,201,{id:result.id,status:result.status,orderPath:"/order?token="+token,deliveryPin:pin,expiresAt:result.expiresAt});
@@ -335,7 +336,7 @@ module.exports=async(req,res)=>{try{
   const next={pause:"PAUSED",resume:"LIVE",close:"CLOSED"}[ctl[2]];
   if(c.status==="CLOSED")return json(res,409,{error:"Closed campaigns cannot be reopened"});
   if(ctl[2]==="resume"&&c.status!=="PAUSED")return json(res,409,{error:"Only paused campaigns can resume"});
-  return json(res,200,await db.campaign.update({where:{id:c.id},data:{status:next}}));
+  return json(res,200,await db.campaign.update({where:{id:c.id},data:{status:next,autoPaused:false}}));
  }
 
  const start=p.match(/^\/campaigns\/([^/]+)\/start$/);
@@ -370,18 +371,18 @@ module.exports=async(req,res)=>{try{
     // count before either has reached reward creation.
     const reserved=await tx.order.count({where:{campaignId:c.id,status:{notIn:["CANCELLED","RETURNED"]}}});
     const unitAgg=await tx.order.aggregate({_sum:{quantity:true},where:{campaignId:c.id,status:{notIn:["CANCELLED","RETURNED"]}}}),reservedUnits=unitAgg._sum.quantity||0;
-    if(reserved>=c.cap){await tx.campaign.update({where:{id:c.id},data:{status:"PAUSED"}});const err=new Error("CAMPAIGN_CAP");err.code="CAMPAIGN_CAP";throw err}
-    if(c.availableQuantity!=null&&reservedUnits+quantity>c.availableQuantity){if(reservedUnits>=c.availableQuantity)await tx.campaign.update({where:{id:c.id},data:{status:"PAUSED"}});const err=new Error("CAMPAIGN_STOCK");err.code="CAMPAIGN_STOCK";throw err}
+    if(reserved>=c.cap){await tx.campaign.update({where:{id:c.id},data:{status:"PAUSED",autoPaused:true}});const err=new Error("CAMPAIGN_CAP");err.code="CAMPAIGN_CAP";throw err}
+    if(c.availableQuantity!=null&&reservedUnits+quantity>c.availableQuantity){if(reservedUnits>=c.availableQuantity)await tx.campaign.update({where:{id:c.id},data:{status:"PAUSED",autoPaused:true}});const err=new Error("CAMPAIGN_STOCK");err.code="CAMPAIGN_STOCK";throw err}
     const order=await tx.order.create({data:{campaignId:c.id,businessId:c.businessId,earnerId:session.sub,attributionCode:a.code,customerName:b.customerName.trim(),customerPhoneHash:phoneHash,customerConfirmTokenHash:hashSecret(confirmToken),product:b.product.trim(),quantity,idempotencyKey:b.idempotencyKey,expiresAt:new Date(Date.now()+ORDER_RESERVATION_MINUTES*60000),campaignVersionSnapshot:c.version,customerOfferSnapshot:c.customerOffer,campaignTermsSnapshot:c.campaignTerms,deliveryInfoSnapshot:c.deliveryInfo,unitPricePaisaSnapshot:c.unitPricePaisa,commissionBasisSnapshot:c.commissionBasis,businessCommissionPaisaSnapshot:c.businessCommissionPaisa,businessCommissionBpsSnapshot:c.businessCommissionBps,earnerShareBpsSnapshot:c.earnerShareBps,earnerRewardPaisaSnapshot:quote.earnerRewardPaisa,platformFeePaisaSnapshot:quote.platformFeePaisa,productSubtotalPaisaSnapshot:subtotal,totalCommissionPaisaSnapshot:quote.totalCommissionPaisa,merchantSettlementPaisaSnapshot:subtotal-quote.totalCommissionPaisa}});
     await tx.orderEvent.create({data:{orderId:order.id,type:"ORDER_SUBMITTED",actorRole:"EARNER",actorId:session.sub}});
-    if(reserved+1>=c.cap||c.availableQuantity!=null&&reservedUnits+quantity>=c.availableQuantity)await tx.campaign.update({where:{id:c.id},data:{status:"PAUSED"}});
+    if(reserved+1>=c.cap||c.availableQuantity!=null&&reservedUnits+quantity>=c.availableQuantity)await tx.campaign.update({where:{id:c.id},data:{status:"PAUSED",autoPaused:true}});
     return order;
    });
    return json(res,201,{...o,customerConfirmationPath:"/order?token="+confirmToken});
   } catch(err) {
    if(err.code==="DUPLICATE_BUYER")return json(res,409,{error:"This customer already has an active or completed order"});
-   if(err.code==="CAMPAIGN_CAP"){await db.campaign.update({where:{id:c.id},data:{status:"PAUSED"}}).catch(()=>{});return json(res,409,{error:"Campaign sales cap reached"})}
-   if(err.code==="CAMPAIGN_STOCK"){const used=await db.order.aggregate({_sum:{quantity:true},where:{campaignId:c.id,status:{notIn:["CANCELLED","RETURNED"]}}}).catch(()=>null);if((used?._sum?.quantity||0)>=Number(c.availableQuantity||Infinity))await db.campaign.update({where:{id:c.id},data:{status:"PAUSED"}}).catch(()=>{});return json(res,409,{error:"Not enough campaign quantity remains"})}
+   if(err.code==="CAMPAIGN_CAP"){await db.campaign.update({where:{id:c.id},data:{status:"PAUSED",autoPaused:true}}).catch(()=>{});return json(res,409,{error:"Campaign sales cap reached"})}
+   if(err.code==="CAMPAIGN_STOCK"){const used=await db.order.aggregate({_sum:{quantity:true},where:{campaignId:c.id,status:{notIn:["CANCELLED","RETURNED"]}}}).catch(()=>null);if((used?._sum?.quantity||0)>=Number(c.availableQuantity||Infinity))await db.campaign.update({where:{id:c.id},data:{status:"PAUSED",autoPaused:true}}).catch(()=>{});return json(res,409,{error:"Not enough campaign quantity remains"})}
    throw err;
   }
  }
