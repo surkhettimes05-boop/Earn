@@ -41,6 +41,8 @@ const expireReservations=async(tx,campaignId)=>{
  if(expired.count){const campaign=await tx.campaign.findUnique({where:{id:campaignId}});if(campaign?.autoPaused)await tx.campaign.update({where:{id:campaignId},data:{status:"LIVE",autoPaused:false}})}
 };
 const campaignSnapshot=c=>({version:c.version,title:c.title,unitPricePaisa:String(c.unitPricePaisa||0),commissionBasis:c.commissionBasis,businessCommissionPaisa:c.businessCommissionPaisa==null?null:String(c.businessCommissionPaisa),businessCommissionBps:c.businessCommissionBps,earnerShareBps:c.earnerShareBps,unitLabel:c.unitLabel,customerOffer:c.customerOffer,campaignTerms:c.campaignTerms,deliveryInfo:c.deliveryInfo});
+const marketplaceReady=c=>c.type==="ORDER"&&!!c.brandName&&!!c.category&&!!c.packSize&&!!c.description&&!!c.serviceArea&&Number.isInteger(c.availableQuantity)&&c.availableQuantity>0&&Array.isArray(c.sellingPoints)&&c.sellingPoints.length>=3&&!!c.whatsappPitch&&!!c.deliveryInfo&&!!c.campaignTerms&&!!c.unitPricePaisa&&!!c.unitLabel&&((c.commissionBasis==="PER_UNIT"&&!!c.businessCommissionPaisa)||(c.commissionBasis==="PERCENT_GMV"&&!!c.businessCommissionBps)||(c.commissionBasis==="FIXED_ORDER"&&!!c.businessCommissionPaisa));
+const reservationExpired=o=>o.expiresAt&&o.expiresAt.getTime()<=Date.now();
 const publicUser=u=>({id:u.id,phone:u.phone,role:u.role,displayName:u.earner?.displayName||null,business:u.business?{id:u.business.id,name:u.business.name,verified:u.business.verified}:null});
 
 module.exports=async(req,res)=>{try{
@@ -74,7 +76,7 @@ module.exports=async(req,res)=>{try{
  if(m==="GET"&&p==="/campaigns"){
   const now=new Date(),activeWhere={status:{notIn:["CANCELLED","RETURNED"]},OR:[{expiresAt:null},{expiresAt:{gt:now}},{status:{notIn:["SUBMITTED","CUSTOMER_CONFIRMED"]}}]};
   const rows=await db.campaign.findMany({where:{status:"LIVE"},include:{business:{select:{name:true,verified:true}},orders:{where:activeWhere,select:{quantity:true}}},orderBy:{createdAt:"desc"}});
-  return json(res,200,rows.map(({orders,...x})=>{const used=orders.reduce((n,o)=>n+o.quantity,0),remaining=x.availableQuantity==null?null:Math.max(0,x.availableQuantity-used);return {...x,remainingQuantity:remaining,soldOut:orders.length>=x.cap||remaining===0}}));
+  return json(res,200,rows.map(({orders,...x})=>{const used=orders.reduce((n,o)=>n+o.quantity,0),remaining=x.availableQuantity==null?null:Math.max(0,x.availableQuantity-used),legacyIncomplete=x.type==="ORDER"&&!marketplaceReady(x);return {...x,remainingQuantity:remaining,legacyIncomplete,soldOut:legacyIncomplete||orders.length>=x.cap||remaining===0}}));
  }
  const publicCampaign=p.match(/^\/campaigns\/([^/]+)$/);
  if(m==="GET"&&publicCampaign){
@@ -82,7 +84,7 @@ module.exports=async(req,res)=>{try{
   const row=await db.campaign.findFirst({where:{id:publicCampaign[1],type:"ORDER",status:{in:["LIVE","PAUSED"]}},include:{business:{select:{name:true,verified:true}},orders:{where:activeWhere,select:{quantity:true}}}});
   if(!row)return json(res,404,{error:"Product not found"});
   const {orders,...x}=row,used=orders.reduce((n,o)=>n+o.quantity,0),remaining=x.availableQuantity==null?null:Math.max(0,x.availableQuantity-used);
-  return json(res,200,{...x,remainingQuantity:remaining,soldOut:x.status==="PAUSED"||orders.length>=x.cap||remaining===0});
+  const legacyIncomplete=!marketplaceReady(x);return json(res,200,{...x,remainingQuantity:remaining,legacyIncomplete,soldOut:legacyIncomplete||x.status==="PAUSED"||orders.length>=x.cap||remaining===0});
  }
 
  // A shared product link is earner-bound by its attribution code. The customer
@@ -98,6 +100,7 @@ module.exports=async(req,res)=>{try{
    await expireReservations(tx,campaignId);
    const campaign=await tx.campaign.findFirst({where:{id:campaignId,type:"ORDER",status:"LIVE"}});
    if(!campaign)throw Object.assign(new Error("This product is not currently available"),{status:409});
+   if(!marketplaceReady(campaign))throw Object.assign(new Error("This legacy campaign must be upgraded before customers can order from a shared link"),{status:409});
    const duplicate=await tx.order.findFirst({where:{campaignId,customerPhoneHash:hashPhone(phone),status:{notIn:["CANCELLED","RETURNED"]}}});
    if(duplicate)throw Object.assign(new Error("This customer already has an active order"),{status:409});
    const active=await tx.order.findMany({where:{campaignId,status:{notIn:["CANCELLED","RETURNED"]}},select:{quantity:true}});
@@ -139,6 +142,7 @@ module.exports=async(req,res)=>{try{
   const o=await db.order.findUnique({where:{customerConfirmTokenHash:hashSecret(t)}});
   if(!o)return json(res,404,{error:"Order not found"});
   if(o.status!=="SUBMITTED"&&o.status!=="CUSTOMER_CONFIRMED")return json(res,409,{error:"Order can no longer be confirmed"});
+  if(reservationExpired(o)){await db.order.update({where:{id:o.id},data:{status:"CANCELLED",cancelledAt:new Date(),cancelReason:"Reservation expired"}});return json(res,409,{error:"This order reservation has expired"});}
   if(o.status==="CUSTOMER_CONFIRMED")return json(res,200,{id:o.id,status:o.status});
   const pin=String(crypto.randomInt(100000,1000000));
   const x=await db.order.update({where:{id:o.id},data:{status:"CUSTOMER_CONFIRMED",customerConfirmedAt:new Date(),deliveryPinHash:hashSecret(pin)}});
@@ -239,7 +243,7 @@ module.exports=async(req,res)=>{try{
  if(m==="GET"&&p==="/business/performance"){
   requireRole(session,"BUSINESS");const biz=await db.business.findUnique({where:{ownerId:session.sub}});if(!biz)return json(res,409,{error:"Business profile required"});
   const rows=await db.order.findMany({where:{businessId:biz.id},include:{earner:{include:{earner:true}}}});
-  const completed=rows.filter(x=>["VERIFIED","PARTIALLY_DELIVERED"].includes(x.status)),units=completed.reduce((n,x)=>n+(x.deliveredQuantity??x.quantity),0),gmv=completed.reduce((n,x)=>n+BigInt(x.unitPricePaisaSnapshot||0)*BigInt(x.deliveredQuantity??x.quantity),0n),commission=completed.reduce((n,x)=>n+BigInt(x.totalCommissionPaisaSnapshot||0),0n),activeEarners=new Set(rows.map(x=>x.earnerId)).size;
+  const completed=rows.filter(x=>["VERIFIED","PARTIALLY_DELIVERED"].includes(x.status)),units=completed.reduce((n,x)=>n+(x.deliveredQuantity??x.quantity),0),gmv=completed.reduce((n,x)=>n+BigInt(x.unitPricePaisaSnapshot||0)*BigInt(x.deliveredQuantity??x.quantity),0n),commission=completed.reduce((n,x)=>{const q=BigInt(x.deliveredQuantity??x.quantity);if(x.commissionBasisSnapshot==="PER_UNIT")return n+BigInt(x.businessCommissionPaisaSnapshot||0)*q;if(x.commissionBasisSnapshot==="PERCENT_GMV")return n+(BigInt(x.unitPricePaisaSnapshot||0)*q*BigInt(x.businessCommissionBpsSnapshot||0)+5000n)/10000n;return n+(q>0n?BigInt(x.totalCommissionPaisaSnapshot||0):0n)},0n),activeEarners=new Set(rows.map(x=>x.earnerId)).size;
   const scores=new Map();for(const o of completed){const q=o.deliveredQuantity??o.quantity,old=scores.get(o.earnerId)||{earnerId:o.earnerId,name:o.earner?.earner?.displayName||"Earner",units:0,orders:0};old.units+=q;old.orders++;scores.set(o.earnerId,old)}
   return json(res,200,{orders:rows.length,unitsSold:units,gmvPaisa:gmv,commissionCostPaisa:commission,activeEarners,conversionRate:rows.length?Math.round(completed.length*10000/rows.length)/100:0,topEarners:[...scores.values()].sort((a,b)=>b.units-a.units).slice(0,5)});
  }
@@ -409,6 +413,7 @@ module.exports=async(req,res)=>{try{
   if(!o)return json(res,404,{error:"Order not found"}); if(session.role!=="ADMIN"&&o.business.ownerId!==session.sub)return json(res,403,{error:"Forbidden"});
   if(action[2]==="accept"){
    if(o.status!=="CUSTOMER_CONFIRMED")return json(res,409,{error:"Customer must confirm first"});
+   if(reservationExpired(o)){await db.order.update({where:{id:o.id},data:{status:"CANCELLED",cancelledAt:new Date(),cancelReason:"Reservation expired"}});return json(res,409,{error:"This order reservation has expired"});}
    const qty=Number(b.quantity||o.quantity); if(!Number.isInteger(qty)||qty<1||qty>o.quantity)return json(res,400,{error:"Invalid accepted quantity"});
    const x=await db.$transaction(async tx=>{const z=await tx.order.update({where:{id:o.id},data:{status:"ACCEPTED",acceptedQuantity:qty,acceptedAt:new Date()}});await tx.orderEvent.create({data:{orderId:o.id,type:"BUSINESS_ACCEPTED",actorRole:session.role,actorId:session.sub,metadata:{acceptedQuantity:qty}}});await notify(tx,o.earnerId,"ORDER_ACCEPTED","Business accepted your order",o.product+" × "+qty,o.id);return z}); return json(res,200,x);
   }
