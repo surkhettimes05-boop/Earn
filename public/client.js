@@ -31,6 +31,7 @@ window.EARN_API = (() => {
     businessOrders:()=>request("/business/orders"),
     businessCampaigns:()=>request("/business/campaigns"),
     businessPerformance:()=>request("/business/performance"),
+    adminExceptions:()=>request("/admin/exceptions"),
     editCampaign:(id,data)=>request("/campaigns/"+encodeURIComponent(id),{method:"PATCH",body:JSON.stringify(data)}),
     createCampaign:data=>request("/campaigns",{method:"POST",body:JSON.stringify(data)}),
     publishCampaign:id=>request("/campaigns/"+encodeURIComponent(id)+"/publish",{method:"POST",body:"{}"}),
