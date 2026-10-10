@@ -361,6 +361,7 @@ module.exports=async(req,res)=>{try{
    const o=await db.$transaction(async tx=>{
     // Lock this campaign row so cap checks and inserts for the same campaign serialize.
     await tx.$queryRawUnsafe('SELECT id FROM "Campaign" WHERE id = $1 FOR UPDATE',c.id);
+    await expireReservations(tx,c.id);
     const duplicate=await tx.order.findFirst({where:{campaignId:c.id,customerPhoneHash:phoneHash,status:{notIn:["CANCELLED","RETURNED"]}}});
     if(duplicate){const err=new Error("DUPLICATE_BUYER");err.code="DUPLICATE_BUYER";throw err}
     // The removed handler counted EARNED/PAYABLE/PAID rewards against the cap.
