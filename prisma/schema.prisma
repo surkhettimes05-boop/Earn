@@ -157,8 +157,10 @@ model Campaign {
   availableQuantity Int?
   deliveryInfo String?
   campaignTerms String?
+  version Int @default(1)
   createdAt   DateTime       @default(now())
   orders      Order[]
+  revisions   CampaignRevision[]
 }
 
 model Attribution {
@@ -182,6 +184,12 @@ model Order {
   attributionCode   String
   customerName      String
   customerPhoneHash String
+  deliveryLocation String?
+  expiresAt DateTime?
+  campaignVersionSnapshot Int?
+  customerOfferSnapshot String?
+  campaignTermsSnapshot String?
+  deliveryInfoSnapshot String?
   customerConfirmTokenHash String? @unique
   customerConfirmedAt DateTime?
   deliveryPinHash String?
@@ -223,6 +231,28 @@ model Order {
   events            OrderEvent[]
 
   @@index([businessId, status])
+}
+
+model CampaignRevision {
+  id String @id @default(cuid())
+  campaignId String
+  campaign Campaign @relation(fields:[campaignId], references:[id])
+  version Int
+  snapshot Json
+  createdAt DateTime @default(now())
+  @@unique([campaignId,version])
+}
+
+model Notification {
+  id String @id @default(cuid())
+  userId String
+  type String
+  title String
+  message String
+  orderId String?
+  readAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([userId,readAt,createdAt])
 }
 
 model Reward {
