@@ -220,6 +220,33 @@ module.exports=async(req,res)=>{try{
   return json(res,200,publicUser(u));
  }
 
+ if(m==="GET"&&p==="/notifications"){
+  const rows=await db.notification.findMany({where:{userId:session.sub},orderBy:{createdAt:"desc"},take:50});
+  return json(res,200,{unread:rows.filter(x=>!x.readAt).length,items:rows});
+ }
+ if(m==="POST"&&p==="/notifications/read"){
+  await db.notification.updateMany({where:{userId:session.sub,readAt:null},data:{readAt:new Date()}});
+  return json(res,200,{ok:true});
+ }
+ if(m==="GET"&&p==="/me/performance"){
+  requireRole(session,"EARNER");
+  const rows=await db.order.findMany({where:{earnerId:session.sub},include:{reward:true}});
+  const submitted=rows.length,confirmed=rows.filter(x=>x.customerConfirmedAt).length,delivered=rows.filter(x=>["DELIVERED","VERIFIED","PARTIALLY_DELIVERED"].includes(x.status)).length,earned=rows.reduce((n,x)=>n+BigInt(x.reward?.amountPaisa||0),0n);
+  return json(res,200,{submitted,confirmed,delivered,conversionRate:submitted?Math.round(delivered*10000/submitted)/100:0,commissionEarnedPaisa:earned});
+ }
+ if(m==="GET"&&p==="/business/performance"){
+  requireRole(session,"BUSINESS");const biz=await db.business.findUnique({where:{ownerId:session.sub}});if(!biz)return json(res,409,{error:"Business profile required"});
+  const rows=await db.order.findMany({where:{businessId:biz.id},include:{earner:{include:{earner:true}}}});
+  const completed=rows.filter(x=>["VERIFIED","PARTIALLY_DELIVERED"].includes(x.status)),units=completed.reduce((n,x)=>n+(x.deliveredQuantity??x.quantity),0),gmv=completed.reduce((n,x)=>n+BigInt(x.unitPricePaisaSnapshot||0)*BigInt(x.deliveredQuantity??x.quantity),0n),commission=completed.reduce((n,x)=>n+BigInt(x.totalCommissionPaisaSnapshot||0),0n),activeEarners=new Set(rows.map(x=>x.earnerId)).size;
+  const scores=new Map();for(const o of completed){const q=o.deliveredQuantity??o.quantity,old=scores.get(o.earnerId)||{earnerId:o.earnerId,name:o.earner?.earner?.displayName||"Earner",units:0,orders:0};old.units+=q;old.orders++;scores.set(o.earnerId,old)}
+  return json(res,200,{orders:rows.length,unitsSold:units,gmvPaisa:gmv,commissionCostPaisa:commission,activeEarners,conversionRate:rows.length?Math.round(completed.length*10000/rows.length)/100:0,topEarners:[...scores.values()].sort((a,b)=>b.units-a.units).slice(0,5)});
+ }
+ if(m==="GET"&&p==="/admin/exceptions"){
+  requireRole(session,"ADMIN");const cutoff=new Date(Date.now()-24*60*60*1000);
+  const rows=await db.order.findMany({where:{OR:[{status:"DISPUTED"},{payment:{status:{in:["REFUND_PENDING","SUBMITTED"]}}},{status:{in:["SUBMITTED","CUSTOMER_CONFIRMED","PAYMENT_PENDING","READY_FOR_PICKUP","PICKED_UP","OUT_FOR_DELIVERY"]},updatedAt:{lt:cutoff}}]},include:{campaign:{select:{title:true}},business:{select:{name:true}},payment:true,logistics:true,disputes:{where:{status:"OPEN"}}},orderBy:{updatedAt:"asc"}});
+  return json(res,200,rows);
+ }
+
  if(m==="POST"&&p==="/campaigns"){
   requireRole(session,"BUSINESS");
   const b=await body(req),biz=await db.business.findUnique({where:{ownerId:session.sub}});
